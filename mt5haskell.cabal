@@ -1,0 +1,97 @@
+cabal-version: 2.2
+
+-- This file has been generated from package.yaml by hpack version 0.36.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           mt5haskell
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/mt5haskell#readme>
+homepage:       https://github.com/github.com/schnecki#readme
+bug-reports:    https://github.com/github.com/schnecki/issues
+author:         Manuel Schneckenreither
+maintainer:     manuel.schnecki@gmail.com
+copyright:      2025 Manuel Schneckenreither
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/github.com/schnecki
+  subdir: mt5haskell
+
+library
+  exposed-modules:
+      MT5
+      MT5.Communication
+      MT5.Config
+      MT5.Init
+      MT5.Logging
+      MT5.PyProc
+  other-modules:
+      Paths_mt5haskell
+  autogen-modules:
+      Paths_mt5haskell
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      base >=4.7 && <5
+    , bytestring
+    , data-default
+    , deepseq
+    , directory
+    , easy-logger
+    , process
+    , regex-compat
+    , text
+  default-language: Haskell2010
+
+executable mt5haskell
+  main-is: Main.hs
+  other-modules:
+      Paths_mt5haskell
+  autogen-modules:
+      Paths_mt5haskell
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , bytestring
+    , data-default
+    , deepseq
+    , directory
+    , easy-logger
+    , mt5haskell
+    , process
+    , regex-compat
+    , text
+  default-language: Haskell2010
+
+test-suite mt5haskell-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_mt5haskell
+  autogen-modules:
+      Paths_mt5haskell
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , bytestring
+    , data-default
+    , deepseq
+    , directory
+    , easy-logger
+    , mt5haskell
+    , process
+    , regex-compat
+    , text
+  default-language: Haskell2010

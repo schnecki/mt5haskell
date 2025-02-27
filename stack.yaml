@@ -1,0 +1,15 @@
+flags: {}
+packages:
+- .
+
+extra-include-dirs: []
+
+extra-lib-dirs: []
+
+
+extra-deps: []
+
+
+allow-newer: false
+resolver: lts-22.17
+# resolver: lts-20.26
