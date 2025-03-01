@@ -7,7 +7,8 @@ extra-include-dirs: []
 extra-lib-dirs: []
 
 
-extra-deps: []
+extra-deps:
+- python-pickle-0.3.0@sha256:bb7fd00f48a6eca8cc52be22ad36c7e06bceaa027d44413555aa63ab49f0160e,1883
 
 
 allow-newer: false

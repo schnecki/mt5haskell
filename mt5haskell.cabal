@@ -27,6 +27,7 @@ source-repository head
 library
   exposed-modules:
       MT5
+      MT5.API
       MT5.Communication
       MT5.Config
       MT5.Init
@@ -47,6 +48,7 @@ library
     , directory
     , easy-logger
     , process
+    , python-pickle
     , regex-compat
     , text
   default-language: Haskell2010
@@ -69,6 +71,7 @@ executable mt5haskell
     , easy-logger
     , mt5haskell
     , process
+    , python-pickle
     , regex-compat
     , text
   default-language: Haskell2010
@@ -92,6 +95,7 @@ test-suite mt5haskell-test
     , easy-logger
     , mt5haskell
     , process
+    , python-pickle
     , regex-compat
     , text
   default-language: Haskell2010

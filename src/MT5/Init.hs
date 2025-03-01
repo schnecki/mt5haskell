@@ -50,6 +50,7 @@ createPythonProcess config
   writeIORef pyProc $ PyProc inp out phandle
 
 -- | Clones the repo, installs the libraries on linux and windows side and starts the server and python process.
+-- Overwrites the global config.
 startMT5 :: Config -> IO Config
 startMT5 config = do
   cloneMT5Linux
@@ -58,6 +59,7 @@ startMT5 config = do
   startMT5Server config'
   threadDelay (1 * 10 ^ 6) -- give it some time to startup
   createPythonProcess config'
+  setGlobalConfig config'
   return config'
   where
     installMT5InWine :: IO (Config)
@@ -71,7 +73,8 @@ startMT5 config = do
       $(logInfo) $ "Using Windows Python at " ++ winPython
       $(logInfo) $ "Using Windows pip at " ++ winPip
       pipInstall winPip "MetaTrader5"
-      pipUpgrade winPip "MetaTrader5"
+      -- pipInstall winPip "json"
+      -- pipUpgrade winPip "MetaTrader5"
       pipInstall winPip "-e /tmp/mt5linux/"
       -- pipInstall winPip "matplotlib"
       -- pipInstall winPip "pandas"

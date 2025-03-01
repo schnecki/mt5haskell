@@ -1,12 +1,18 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE TemplateHaskell      #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 module MT5.Communication
     ( send
     , receive
+    , unpickle'
     ) where
 
-import qualified Data.ByteString as B
+import qualified Data.ByteString        as B
 import           Data.IORef
+import           Data.Maybe             (fromMaybe)
+import qualified Data.Text              as T
 import           EasyLogger
+import           Language.Python.Pickle hiding (unpickle')
 import           System.IO
 
 import           MT5.PyProc
@@ -31,6 +37,23 @@ receive = do
   --   then putStrLn (">>>> " ++ str) >> hFlush stdout >> receive
   --   else return str
   return line
+
+
+unpickle' :: FromValue a => String -> B.ByteString -> a
+unpickle' tp bs = tryUnpickle' errorUnpickle bs
+  where errorUnpickle :: B.ByteString -> a
+        errorUnpickle x = error $ "Could not parse `" ++ tp ++ "` from: " ++ show x
+
+
+tryUnpickle' :: FromValue a => (B.ByteString -> a) -> B.ByteString -> a
+tryUnpickle' alt bs =
+  case unpickle bs of
+    Left str -> error str
+    Right x  -> fromMaybe (alt bs) (fromVal x)
+
+instance {-# OVERLAPS #-} FromValue String where
+    fromVal = fmap T.unpack . fromVal
+
 
 -- errorUnpickle :: String -> B.ByteString -> a
 -- errorUnpickle tp x = error $ "Could not parse `" ++ tp ++ "` from: " ++ show x

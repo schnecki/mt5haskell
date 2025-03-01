@@ -29,6 +29,7 @@ dependencies:
 - regex-compat
 - easy-logger
 - bytestring
+- python-pickle
 
 ghc-options:
 - -Wall
