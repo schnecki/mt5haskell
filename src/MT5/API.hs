@@ -12,6 +12,7 @@ module MT5.API
   , symbolsGet
   , symbolSelect
   , orderCheck
+  , orderSend
   ) where
 
 import           Control.DeepSeq
@@ -137,9 +138,14 @@ symbolSelect symbol = do
   send symbol
   unpickle' "Bool" <$> receive
 
-orderCheck :: MqlTradeRequest -> IO ()
-orderCheck MqlTradeRequest{..} = do
+orderCheck :: MqlTradeRequest -> IO OrderSendResult
+orderCheck request = do
   send "ORDER_CHECK"
+  sendMqlTradeRequest request
+  readOrderSendResult
+
+sendMqlTradeRequest :: MqlTradeRequest -> IO ()
+sendMqlTradeRequest MqlTradeRequest {..} = do
   send $ show . fromEnum $ trReqAction
   send $ show trReqMagic
   send $ show trReqOrder
@@ -157,6 +163,12 @@ orderCheck MqlTradeRequest{..} = do
   send   trReqComment
   send $ show trReqPosition
   send $ show trReqPositionBy
+
+orderSend :: MqlTradeRequest -> IO OrderSendResult
+orderSend request = do
+  send "ORDER_SEND"
+  sendMqlTradeRequest request
+  readOrderSendResult
 
 
 -- TODO: CancelOrderPOST, CancelAllOrdersPOST, CurrentPriceGET, InstrumentCandleGET,

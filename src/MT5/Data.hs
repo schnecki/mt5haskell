@@ -7,10 +7,12 @@ module MT5.Data
     , module MT5.Data.TradeRequestAction
     , module MT5.Data.MqlTradeRequest
     , module MT5.Data.SymbolInfo
+    , module MT5.Data.OrderSendResult
     ) where
 
 import           MT5.Data.AccountInfo
 import           MT5.Data.MqlTradeRequest
+import           MT5.Data.OrderSendResult
 import           MT5.Data.OrderType
 import           MT5.Data.OrderTypeFilling
 import           MT5.Data.OrderTypeTime

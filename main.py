@@ -20,7 +20,7 @@ mt5 = MetaTrader5(
 
 # connect to MetaTrader 5
 
-DEBUG=False
+DEBUG=True
 
 def send(x, info = ""):
     """Send object x and print info to console."""
@@ -292,24 +292,24 @@ for line in sys.stdin:
         result = mt5.symbol_info(symbol)
         log("Symbol info: " + str(result))
         send(log(str(result)))
-    elif line == 'ORDER_CHECK':
+    elif line == 'ORDER_CHECK' or line == 'ORDER_SEND':
         tr = getTradeRequest()
-        result = mt5.order_send(tr)
-        log(result)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            log("2. order_send failed, retcode={}".format(result.retcode))
-            # request the result as a dictionary and display it element by element
-            result_dict=result._asdict()
-            for field in result_dict.keys():
-                log("   {}={}".format(field,result_dict[field]))
-                # if this is a trading request structure, display it element by element as well
-                if field=="request":
-                    traderequest_dict=result_dict[field]._asdict()
-                    for tradereq_filed in traderequest_dict:
-                        log("       traderequest: {}={}".format(tradereq_filed,traderequest_dict[tradereq_filed]))
-            log("shutdown() and quit")
-            mt5.shutdown()
-            quit()
+        if line == 'ORDER_SEND':
+            result = mt5.order_send(tr)
+        else:
+            result = mt5.order_check(tr)
+        xs = result._asdict()
+        sendLog(xs, 'retcode')
+        sendLog(xs, 'deal')
+        sendLog(xs, 'order')
+        sendLog(xs, 'volume')
+        sendLog(xs, 'price')
+        sendLog(xs, 'bid')
+        sendLog(xs, 'ask')
+        sendLog(xs, 'comment')
+        sendLog(xs, 'request_id')
+        sendLog(xs, 'retcode_external')
+
     elif line == 'ERROR':
         formatString = sys.stdin.readline().strip()
         send(formatString.format(account, mt5.last_error()))

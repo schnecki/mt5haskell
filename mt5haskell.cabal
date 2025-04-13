@@ -33,6 +33,7 @@ library
       MT5.Data
       MT5.Data.AccountInfo
       MT5.Data.MqlTradeRequest
+      MT5.Data.OrderSendResult
       MT5.Data.OrderType
       MT5.Data.OrderTypeFilling
       MT5.Data.OrderTypeTime

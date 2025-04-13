@@ -23,7 +23,7 @@ main = do
   putStrLn $ "Account Info done"
   positionsGet >>= print
   -- putStr "Press enter to exit" >> hFlush stdout
-  -- symbolSelect "EURJPY"
+  symbolSelect "EURJPY.pro"
   recurse ""
   stopMT5
   putStrLn ""
@@ -32,26 +32,26 @@ main = do
   where recurse x = do
           unless (x == "q") $ do
             symbolsGet "US500*" >>= print
-            -- symbolInfo "EURUSD"
-            -- symbolInfo "US500.pro"
-            -- orderCheck
-            --   $ MqlTradeRequest
-            --       TRADE_ACTION_REMOVE
-            --       0
-            --       92778792
-            --       "US500.pro"
-            --       0.01
-            --       5111.2
-            --       5111.1
-            --       5000
-            --       5500
-            --       100
-            --       ORDER_TYPE_BUY
-            --       ORDER_FILLING_FOK
-            --       ORDER_TIME_DAY
-            --       0
-            --       "test order"
-            --       0
-            --       0
+            symbolInfo "US500.pro"
+            res <- orderSend
+              $ MqlTradeRequest
+                  TRADE_ACTION_REMOVE
+                  0
+                  92778792
+                  "US500.pro"
+                  0.01
+                  5111.2
+                  5111.1
+                  5000
+                  5500
+                  100
+                  ORDER_TYPE_BUY
+                  ORDER_FILLING_FOK
+                  ORDER_TIME_DAY
+                  0
+                  "test order"
+                  0
+                  0
+            print res
             getLine >>= recurse
 
