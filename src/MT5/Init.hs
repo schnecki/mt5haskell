@@ -37,6 +37,7 @@ venvPython config = makeAbsolute (venvDir config ++ "/bin/python")
 -- | Python process object, fetchable from within IO so we don't need to pass it to every function/hide it with Reader
 mt5ServerThread :: IORef (ThreadId, Handle, Handle)
 mt5ServerThread = unsafePerformIO $ newIORef (error "Not yet initialized" :: (ThreadId, Handle, Handle))
+{-# NOINLINE mt5ServerThread #-}
 
 
 -- | Create python process
@@ -54,16 +55,16 @@ createPythonProcess config
 startMT5 :: Config -> IO Config
 startMT5 config = do
   cloneMT5Linux
-  createVenv
-  config' <- installMT5InWine
+  newInstall <- createVenv
+  config' <- installMT5InWine newInstall
   startMT5Server config'
   threadDelay (1 * 10 ^ 6) -- give it some time to startup
   createPythonProcess config'
   setGlobalConfig config'
   return config'
   where
-    installMT5InWine :: IO (Config)
-    installMT5InWine = do
+    installMT5InWine :: Bool -> IO Config
+    installMT5InWine newInstall = do
       winPythons <- lines <$> readProcess "locate" ["python.exe"] []
       when (null winPythons) $
         error "Cannot find python.exe (wine python installation). See output of `locate python.exe`"
@@ -72,13 +73,14 @@ startMT5 config = do
           winPip = subRegex (mkRegex "/python.exe") winPython "" ++ "/Scripts/pip.exe"
       $(logInfo) $ "Using Windows Python at " ++ winPython
       $(logInfo) $ "Using Windows pip at " ++ winPip
-      pipInstall winPip "MetaTrader5"
-      -- pipInstall winPip "json"
-      -- pipUpgrade winPip "MetaTrader5"
-      pipInstall winPip "-e /tmp/mt5linux/"
-      -- pipInstall winPip "matplotlib"
-      -- pipInstall winPip "pandas"
-      -- pipInstall winPip "-r /tmp/mt5linux/requirements.txt"
+      when newInstall $ do
+        pipInstall winPip "MetaTrader5"
+        -- pipInstall winPip "json"
+        -- pipUpgrade winPip "MetaTrader5"
+        pipInstall winPip "-e /tmp/mt5linux/"
+        -- pipInstall winPip "matplotlib"
+        -- pipInstall winPip "pandas"
+        -- pipInstall winPip "-r /tmp/mt5linux/requirements.txt"
       return $ config {winePython = winPython, winePip = winPip}
       where
         toMaybe :: [a] -> Maybe [a]
@@ -115,22 +117,25 @@ startMT5 config = do
     cloneMT5Linux :: IO ()
     cloneMT5Linux =
       doesDirectoryExist "/tmp/mt5linux" >>= \exists ->
-        when (not exists) $ do callProcess "git" ["clone", mt5linuxGitRepo config, "/tmp/mt5linux"]
+        unless exists $ do callProcess "git" ["clone", mt5linuxGitRepo config, "/tmp/mt5linux"]
     -- | Create venv and install libs. Only performs install if virtualenv is not initialized yet. Reinstall by
     -- deleting the folder [venvDir].
-    createVenv :: IO ()
+    createVenv :: IO Bool
     createVenv = do
       venvExists <- doesDirectoryExist (venvDir config)
-      when (not venvExists) $ do
+      if venvExists
+        then return False
+        else do
         pythons <-
           filter ('-' `notElem`) . filter (T.isInfixOf "python3." . T.pack) . lines <$>
           readProcess "ls" ["/usr/bin/"] ""
-        when (length pythons == 0) $
+        when (null pythons) $
           error "Could not find a compatible version of python (python <=3.11). Looked for /usr/bin/python3*"
         let python = last pythons
         putStrLn $ "Using python version: " ++ python
         callProcess python ["-m", "venv", venvDir config]
         pipInstall "-e /tmp/mt5linux"
+        return True
       where
         pipInstall name = pip ("install " ++ name)
         pip cmd = do

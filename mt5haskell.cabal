@@ -30,6 +30,15 @@ library
       MT5.API
       MT5.Communication
       MT5.Config
+      MT5.Data
+      MT5.Data.AccountInfo
+      MT5.Data.MqlTradeRequest
+      MT5.Data.OrderType
+      MT5.Data.OrderTypeFilling
+      MT5.Data.OrderTypeTime
+      MT5.Data.SymbolInfo
+      MT5.Data.TradePosition
+      MT5.Data.TradeRequestAction
       MT5.Init
       MT5.Logging
       MT5.PyProc

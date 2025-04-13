@@ -1,5 +1,7 @@
 
 import json
+import time
+import struct
 import pickle
 import sys
 import os
@@ -18,36 +20,94 @@ mt5 = MetaTrader5(
 
 # connect to MetaTrader 5
 
-# request connection status and parameters
-# print(mt5.terminal_info())
-# get data on MetaTrader 5 version
-# print(mt5.version())
-
+DEBUG=False
 
 def send(x, info = ""):
-    with os.fdopen(sys.stdout.fileno(), "wb", closefd = False) as stdout:
+    """Send object x and print info to console."""
+    with os.fdopen(sys.stdout.fileno(), "ab", closefd = False) as stdout:
         # if info != "":
-        sys.stderr.write("Info: " + str(info) + ". Value: " + str(x) + " [Class: " + x.__class__.__name__ + "]\n")
-        sys.stderr.flush()
-        pickle.dump(x, stdout, protocol = 2)
-        stdout.write(b"\n")
+        if DEBUG:
+            sys.stderr.write("Info: " + str(info) + ". Value: '" + str(x) + "' [Class: " + x.__class__.__name__ + "]\n")
+            sys.stderr.flush()
+        data = pickle.dumps(x)
+        length = struct.pack('!I', len(data))  # 4-byte big-endian unsigned int
+        stdout.write(length)
+        stdout.write(data)
         stdout.flush()
+
+
+def sendLog(xs, prop: str):
+    """Log and then send the property in xs."""
+    # log(xs[prop])
+    send(xs[prop], prop) # , info = prop)
 
 account  = ""
 password = ""
 server   = "localhost"
 
 def log(x):
-    sys.stderr.write(">> " + str(x) + "\n")
-    sys.stderr.flush()
+    """Log x to console."""
+    if DEBUG:
+        sys.stderr.write(">> " + str(x) + "\n")
+        sys.stderr.flush()
     return(x)
 
+def getTradeRequest():
+    """Retrieve a TradeRequest from the file descriptor."""
+    action = int(sys.stdin.readline().strip())
+    magic = int(sys.stdin.readline().strip())
+    order = int(sys.stdin.readline().strip())
+    symbol = sys.stdin.readline().strip()
+    volume = float(sys.stdin.readline().strip())
+    price = float(sys.stdin.readline().strip())
+    stoplimit = float(sys.stdin.readline().strip())
+    sl = float(sys.stdin.readline().strip())
+    tp = float(sys.stdin.readline().strip())
+    deviation = int(sys.stdin.readline().strip())
+    type = int(sys.stdin.readline().strip())
+    typeFilling = int(sys.stdin.readline().strip())
+    typeTime = int(sys.stdin.readline().strip())
+    expiration = int(sys.stdin.readline().strip())
+    comment = sys.stdin.readline().strip()
+    position = int(sys.stdin.readline().strip())
+    positionBy = int(sys.stdin.readline().strip())
+    request = {
+       "action"       : action,
+       "magic"        : magic,
+       "order"        : order,
+       "symbol"       : symbol,
+       "volume"       : volume,
+       "price"        : price,
+       "stoplimit"    : stoplimit,
+       "sl"           : sl,
+       "tp"           : tp,
+       "deviation"    : deviation,
+       "type"         : type,
+       "type_filling" : typeFilling,
+       "type_time"    : typeTime,
+       "expiration"   : expiration,
+       "comment"      : comment,
+       "position"     : position,
+       "position_by"  : positionBy
+
+    }
+    return(request)
+
+# request connection status and parameters
+# get data on MetaTrader 5 version
+# print(mt5.version())
+
+
 for line in sys.stdin:
-    sys.stderr.write("Py Input: " + str(line) + "\n")
-    sys.stderr.flush()
+    if DEBUG:
+        sys.stderr.write("Py Input: " + str(line) + "\n")
+        sys.stderr.flush()
     line = line.rstrip().upper()
     if line == 'INITIALIZE':
-        send(log(mt5.initialize()))
+        result = mt5.initialize()
+        # log(mt5.terminal_info())
+        # log(mt5.symbols_get())
+        send(result)
     elif line == 'LOGIN':
         account = int(sys.stdin.readline().strip())
         password = sys.stdin.readline().strip()
@@ -63,36 +123,193 @@ for line in sys.stdin:
         else :
             xs = account_info._asdict()
             log(xs)
-            send(log(xs['login']))              # 173941
-            send(log(xs['trade_mode']))         # 2
-            send(log(xs['leverage']))           # 100
-            send(log(xs['limit_orders']))       # 0
-            send(log(xs['margin_so_mode']))     # 0
-            send(log(xs['trade_allowed']))      # False
-            send(log(xs['trade_expert']))       # True
-            send(log(xs['margin_mode']))        # 2
-            send(log(xs['currency_digits']))    # 2
-            send(log(xs['fifo_close']))         # False
-            send(log(xs['balance']))            # 330.43
-            send(log(xs['credit']))             # 0.0
-            send(log(xs['profit']))             # 29.61
-            # send(log(xs['equity']))             # 360.04
-            send(log(xs['margin']))             # 198.45
-            send(log(xs['margin_free']))        # 161.59
-            send(log(xs['margin_level']))       # 181.4260519022424
-            send(log(xs['margin_so_call']))     # 100.0
-            send(log(xs['margin_so_so']))       # 50.0
-            send(log(xs['margin_initial']))     # 0.0
-            send(log(xs['margin_maintenance'])) # 0.0
-            send(log(xs['assets']))             # 0.0
-            send(log(xs['liabilities']))        # 0.0
-            send(log(xs['commission_blocked'])) # 0.0
-            send(log(xs['name']))               # 'EU/M173941/EUR'
-            send(log(xs['server']))             # 'OANDATMS-MT5'
-            send(log(xs['currency']))           # 'EUR'
-            send(log(xs['company']))            # 'OANDA TMS BrokersS.A.'
+            sendLog(xs, 'login')              # 173941
+            sendLog(xs, 'trade_mode')         # 2
+            sendLog(xs, 'leverage')           # 100
+            sendLog(xs, 'limit_orders')       # 0
+            sendLog(xs, 'margin_so_mode')     # 0
+            sendLog(xs, 'trade_allowed')      # False
+            sendLog(xs, 'trade_expert')       # True
+            sendLog(xs, 'margin_mode')        # 2
+            sendLog(xs, 'currency_digits')    # 2
+            sendLog(xs, 'fifo_close')         # False
+            sendLog(xs, 'balance')            # 330.43
+            sendLog(xs, 'credit')             # 0.0
+            sendLog(xs, 'profit')             # 29.61
+            sendLog(xs, 'equity')             # 360.04
+            sendLog(xs, 'margin')             # 198.45
+            sendLog(xs, 'margin_free')        # 161.59
+            sendLog(xs, 'margin_level')       # 181.4260519022424
+            sendLog(xs, 'margin_so_call')     # 100.0
+            sendLog(xs, 'margin_so_so')       # 50.0
+            sendLog(xs, 'margin_initial')     # 0.0
+            sendLog(xs, 'margin_maintenance') # 0.0
+            sendLog(xs, 'assets')             # 0.0
+            sendLog(xs, 'liabilities')        # 0.0
+            sendLog(xs, 'commission_blocked') # 0.0
+            sendLog(xs, 'name')               # 'EU/M173941/EUR'
+            sendLog(xs, 'server')             # 'OANDATMS-MT5'
+            sendLog(xs, 'currency')           # 'EUR'
+            sendLog(xs, 'company')            # 'OANDA TMS BrokersS.A.'
+    elif line == 'POSITIONS_GET':
+        log("Received command POSITIONS_GET")
+        positions = mt5.positions_get()
+        send(len(positions))
+        for xs in positions:
+            xs = xs._asdict()
+            sendLog(xs, 'ticket')
+            sendLog(xs, 'time')
+            sendLog(xs, 'time_msc')
+            sendLog(xs, 'time_update')
+            sendLog(xs, 'time_update_msc')
+            sendLog(xs, 'type')
+            sendLog(xs, 'magic')
+            sendLog(xs, 'identifier')
+            sendLog(xs, 'reason')
+            sendLog(xs, 'volume')
+            sendLog(xs, 'price_open')
+            sendLog(xs, 'sl')
+            sendLog(xs, 'tp')
+            sendLog(xs, 'price_current')
+            sendLog(xs, 'swap')
+            sendLog(xs, 'profit')
+            sendLog(xs, 'symbol')
+            sendLog(xs, 'comment')
+            sendLog(xs, 'external_id')
+    elif line == 'SYMBOLS_GET':
+        group = sys.stdin.readline().strip()
+        symbols = mt5.symbols_get(group)
+        # symbols = symbols[0:2]  #
+        send(len(symbols), "Length")
+        log(symbols)
+        for xs in symbols:
+            xs = xs._asdict()
+            sendLog(xs, 'custom')
+            sendLog(xs, 'chart_mode')
+            sendLog(xs, 'select')
+            sendLog(xs, 'visible')
+            sendLog(xs, 'session_deals')
+            sendLog(xs, 'session_buy_orders')
+            sendLog(xs, 'session_sell_orders')
+            sendLog(xs, 'volume')
+            sendLog(xs, 'volumehigh')
+            sendLog(xs, 'volumelow')
+            sendLog(xs, 'time')
+            sendLog(xs, 'digits')
+            sendLog(xs, 'spread')
+            sendLog(xs, 'spread_float')
+            sendLog(xs, 'ticks_bookdepth')
+            sendLog(xs, 'trade_calc_mode')
+            sendLog(xs, 'trade_mode')
+            sendLog(xs, 'start_time')
+            sendLog(xs, 'expiration_time')
+            sendLog(xs, 'trade_stops_level')
+            sendLog(xs, 'trade_freeze_level')
+            sendLog(xs, 'trade_exemode')
+            sendLog(xs, 'swap_mode')
+            sendLog(xs, 'swap_rollover3days')
+            sendLog(xs, 'margin_hedged_use_leg')
+            sendLog(xs, 'expiration_mode')
+            sendLog(xs, 'filling_mode')
+            sendLog(xs, 'order_mode')
+            sendLog(xs, 'order_gtc_mode')
+            sendLog(xs, 'option_mode')
+            sendLog(xs, 'option_right')
+            sendLog(xs, 'bid')
+            sendLog(xs, 'bidhigh')
+            sendLog(xs, 'bidlow')
+            sendLog(xs, 'ask')
+            sendLog(xs, 'askhigh')
+            sendLog(xs, 'asklow')
+            sendLog(xs, 'last')
+            sendLog(xs, 'lasthigh')
+            sendLog(xs, 'lastlow')
+            sendLog(xs, 'volume_real')
+            sendLog(xs, 'volumehigh_real')
+            sendLog(xs, 'volumelow_real')
+            sendLog(xs, 'option_strike')
+            sendLog(xs, 'point')
+            sendLog(xs, 'trade_tick_value')
+            sendLog(xs, 'trade_tick_value_profit')
+            sendLog(xs, 'trade_tick_value_loss')
+            sendLog(xs, 'trade_tick_size')
+            sendLog(xs, 'trade_contract_size')
+            sendLog(xs, 'trade_accrued_interest')
+            sendLog(xs, 'trade_face_value')
+            sendLog(xs, 'trade_liquidity_rate')
+            sendLog(xs, 'volume_min')
+            sendLog(xs, 'volume_max')
+            sendLog(xs, 'volume_step')
+            sendLog(xs, 'volume_limit')
+            sendLog(xs, 'swap_long')
+            sendLog(xs, 'swap_short')
+            sendLog(xs, 'margin_initial')
+            sendLog(xs, 'margin_maintenance')
+            sendLog(xs, 'session_volume')
+            sendLog(xs, 'session_turnover')
+            sendLog(xs, 'session_interest')
+            sendLog(xs, 'session_buy_orders_volume')
+            sendLog(xs, 'session_sell_orders_volume')
+            sendLog(xs, 'session_open')
+            sendLog(xs, 'session_close')
+            sendLog(xs, 'session_aw')
+            sendLog(xs, 'session_price_settlement')
+            sendLog(xs, 'session_price_limit_min')
+            sendLog(xs, 'session_price_limit_max')
+            sendLog(xs, 'margin_hedged')
+            sendLog(xs, 'price_change')
+            sendLog(xs, 'price_volatility')
+            sendLog(xs, 'price_theoretical')
+            sendLog(xs, 'price_greeks_delta')
+            sendLog(xs, 'price_greeks_theta')
+            sendLog(xs, 'price_greeks_gamma')
+            sendLog(xs, 'price_greeks_vega')
+            sendLog(xs, 'price_greeks_rho')
+            sendLog(xs, 'price_greeks_omega')
+            sendLog(xs, 'price_sensitivity')
+            sendLog(xs, 'basis')
+            sendLog(xs, 'category')
+            sendLog(xs, 'currency_base')
+            sendLog(xs, 'currency_profit')
+            sendLog(xs, 'currency_margin')
+            sendLog(xs, 'bank')
+            sendLog(xs, 'description')
+            sendLog(xs, 'exchange')
+            sendLog(xs, 'formula')
+            sendLog(xs, 'isin')
+            sendLog(xs, 'name')
+            sendLog(xs, 'page')
+            sendLog(xs, 'path')
 
-
+    elif line == 'SYMBOL_SELECT':
+        symbol = str(sys.stdin.readline().strip())
+        log("Py Symbol: '" + str(symbol) + "'")
+        result = mt5.symbol_select(symbol, True)
+        log("Symbol select: " + str(result))
+        send(log(str(result)))
+    elif line == 'SYMBOL_INFO':
+        symbol = sys.stdin.readline().strip()
+        result = mt5.symbol_info(symbol)
+        log("Symbol info: " + str(result))
+        send(log(str(result)))
+    elif line == 'ORDER_CHECK':
+        tr = getTradeRequest()
+        result = mt5.order_send(tr)
+        log(result)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            log("2. order_send failed, retcode={}".format(result.retcode))
+            # request the result as a dictionary and display it element by element
+            result_dict=result._asdict()
+            for field in result_dict.keys():
+                log("   {}={}".format(field,result_dict[field]))
+                # if this is a trading request structure, display it element by element as well
+                if field=="request":
+                    traderequest_dict=result_dict[field]._asdict()
+                    for tradereq_filed in traderequest_dict:
+                        log("       traderequest: {}={}".format(tradereq_filed,traderequest_dict[tradereq_filed]))
+            log("shutdown() and quit")
+            mt5.shutdown()
+            quit()
     elif line == 'ERROR':
         formatString = sys.stdin.readline().strip()
         send(formatString.format(account, mt5.last_error()))
