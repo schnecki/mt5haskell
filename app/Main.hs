@@ -21,12 +21,15 @@ main = do
   -- putStrLn $ "Login result: " <> show res
   accountInfo >>= print
   putStrLn $ "Account Info done"
+  ordersGet Nothing Nothing >>= print
+  putStrLn $ "OrdersGet done"
   positionsGet >>= print
-  -- putStr "Press enter to exit" >> hFlush stdout
-  symbolSelect "EURJPY.pro"
-  recurse ""
-  stopMT5
-  putStrLn ""
+  putStr "Press enter to exit" >> hFlush stdout
+  symbolSelect "EURJPY.pro" >>= print
+  symbolInfo "EURJPY.pro" >>= print
+  -- recurse ""
+  -- stopMT5
+  -- putStrLn ""
 
 
   where recurse x = do

@@ -1,6 +1,6 @@
 cabal-version: 2.2
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.37.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -34,15 +34,18 @@ library
       MT5.Data.AccountInfo
       MT5.Data.MqlTradeRequest
       MT5.Data.OrderSendResult
+      MT5.Data.OrderState
       MT5.Data.OrderType
       MT5.Data.OrderTypeFilling
       MT5.Data.OrderTypeTime
       MT5.Data.SymbolInfo
+      MT5.Data.TradeOrder
       MT5.Data.TradePosition
       MT5.Data.TradeRequestAction
       MT5.Init
       MT5.Logging
       MT5.PyProc
+      MT5.Util
   other-modules:
       Paths_mt5haskell
   autogen-modules:
@@ -61,6 +64,7 @@ library
     , python-pickle
     , regex-compat
     , text
+    , time
   default-language: Haskell2010
 
 executable mt5haskell
@@ -84,6 +88,7 @@ executable mt5haskell
     , python-pickle
     , regex-compat
     , text
+    , time
   default-language: Haskell2010
 
 test-suite mt5haskell-test
@@ -108,4 +113,5 @@ test-suite mt5haskell-test
     , python-pickle
     , regex-compat
     , text
+    , time
   default-language: Haskell2010

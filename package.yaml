@@ -30,6 +30,7 @@ dependencies:
 - easy-logger
 - bytestring
 - python-pickle
+- time
 
 ghc-options:
 - -Wall

@@ -13,6 +13,7 @@ module MT5.API
   , symbolSelect
   , orderCheck
   , orderSend
+  , ordersGet
   ) where
 
 import           Control.DeepSeq
@@ -21,6 +22,10 @@ import           GHC.Generics
 
 import           MT5.Communication
 import           MT5.Data
+import           MT5.Util
+
+type Symbol = String
+type Ticket = Int
 
 
 data MT5Login = MT5Login
@@ -56,13 +61,13 @@ accountInfo = do
   send "ACCOUNT_INFO"
   AccountInfo
     <$> (unpickle' "Int" <$> receive)
+    <*> (toEnum . unpickle' "Int" <$> receive)
     <*> (unpickle' "Int" <$> receive)
     <*> (unpickle' "Int" <$> receive)
-    <*> (unpickle' "Int" <$> receive)
-    <*> (unpickle' "Int" <$> receive)
+    <*> (toEnum . unpickle' "Int" <$> receive)
     <*> (unpickle' "Bool" <$> receive)
     <*> (unpickle' "Bool" <$> receive)
-    <*> (unpickle' "Int" <$> receive)
+    <*> (toEnum . unpickle' "Int" <$> receive)
     <*> (unpickle' "Int" <$> receive)
     <*> (unpickle' "Bool" <$> receive)
     <*> (unpickle' "Double" <$> receive)
@@ -98,14 +103,14 @@ positionsGet = do
   replicateM len
     $ TradePosition
         <$> (unpickle' "Int" <$> receive)
+        <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
+        <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+        <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
+        <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+        <*> (toEnum . unpickle' "Int" <$> receive)
         <*> (unpickle' "Int" <$> receive)
-        <*> (unpickle' "Integer" <$> receive)
-        <*> (unpickle' "Integer" <$> receive)
-        <*> (unpickle' "Integer" <$> receive)
         <*> (unpickle' "Int" <$> receive)
-        <*> (unpickle' "Int" <$> receive)
-        <*> (unpickle' "Int" <$> receive)
-        <*> (unpickle' "Int" <$> receive)
+        <*> (toEnum . unpickle' "Int" <$> receive)
         <*> (unpickle' "Double" <$> receive)
         <*> (unpickle' "Double" <$> receive)
         <*> (unpickle' "Double" <$> receive)
@@ -116,6 +121,41 @@ positionsGet = do
         <*> (unpickle' "String" <$> receive)
         <*> (unpickle' "String" <$> receive)
         <*> (unpickle' "String" <$> receive)
+
+-- | Get active orders with the ability to filter by symbol or ticket. You can specify the symbol or the ticket if you
+-- desire.
+ordersGet :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]
+ordersGet mInstr mTicket = do
+  case (mInstr, mTicket) of
+    (Just instr, Nothing) -> do
+      send "ORDERS_GET_SYMBOL"
+      send instr
+    (_, Just ticket) -> do
+      send "ORDERS_GET_TICKET"
+      send (show ticket)
+    _ -> do
+      send "ORDERS_GET"
+  len <- unpickle' "Int" <$> receive
+  replicateM len
+        $ TradeOrder
+            <$> (unpickle' "Int" <$> receive)
+            <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
+            <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+            <*> (unpickle' "Int" <$> receive)
+            <*> (toEnum . unpickle' "Int" <$> receive)
+            <*> (unpickle' "Integer" <$> receive)
+            <*> (unpickle' "Int" <$> receive)
+            <*> (toEnum . unpickle' "Int" <$> receive)
+            <*> (unpickle' "Int" <$> receive)
+            <*> (unpickle' "Double" <$> receive)
+            <*> (unpickle' "Double" <$> receive)
+            <*> (unpickle' "Double" <$> receive)
+            <*> (unpickle' "Double" <$> receive)
+            <*> (unpickle' "Double" <$> receive)
+            <*> (unpickle' "String" <$> receive)
+            <*> (unpickle' "String" <$> receive)
+            <*> (unpickle' "String" <$> receive)
+
 
 symbolsGet :: String -> IO [SymbolInfo]
 symbolsGet group = do
@@ -125,12 +165,11 @@ symbolsGet group = do
   replicateM len readSymbolInfo
 
 
-symbolInfo :: String -> IO String
+symbolInfo :: String -> IO SymbolInfo
 symbolInfo symbol = do
   send "SYMBOL_INFO"
   send symbol
-  unpickle' "String" <$> receive
-
+  readSymbolInfo
 
 symbolSelect :: String -> IO Bool
 symbolSelect symbol = do
@@ -215,4 +254,4 @@ orderSend request = do
 --    3767:    def history_deals_total(self,date_from, date_to):
 --    3834:    def history_deals_get(self,*args,**kwargs):
 --    4000:    def eval(self,command:str):
---    4003:    def execute(self,command:str):
+--    4003:    def execute(self,command:str)
