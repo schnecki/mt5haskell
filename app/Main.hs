@@ -25,8 +25,8 @@ main = do
   putStrLn $ "OrdersGet done"
   positionsGet >>= print
   putStr "Press enter to exit" >> hFlush stdout
-  symbolSelect "EURJPY.pro" >>= print
-  symbolInfo "EURJPY.pro" >>= print
+  -- symbolSelect "EURJPY.pro" >>= print
+  -- symbolInfo "EURJPY.pro" >>= print
   -- recurse ""
   -- stopMT5
   -- putStrLn ""
@@ -38,21 +38,21 @@ main = do
             symbolInfo "US500.pro"
             res <- orderSend
               $ MqlTradeRequest
-                  TRADE_ACTION_REMOVE
+                  TRADE_ACTION_PENDING
                   0
-                  92778792
-                  "US500.pro"
-                  0.01
-                  5111.2
-                  5111.1
-                  5000
-                  5500
-                  100
+                  0
+                  "EURUSD.pro"
+                  0.10
+                  1.1008
+                  1.1008
+                  1.095
+                  1.12
+                  3
                   ORDER_TYPE_BUY
                   ORDER_FILLING_FOK
-                  ORDER_TIME_DAY
+                  ORDER_TIME_GTC
                   0
-                  "test order"
+                  "MT5 test order"
                   0
                   0
             print res
