@@ -16,10 +16,13 @@ module MT5.API
   , orderCheck
   , orderSend
   , ordersGet
+  , currentPriceGET
   ) where
 
 import           Control.DeepSeq
 import           Control.Monad     (replicateM)
+import           Data.List         (isPrefixOf)
+import qualified Data.Text         as T
 import           GHC.Generics
 
 import           MT5.Communication
@@ -178,6 +181,61 @@ symbolSelect symbol = do
   send "SYMBOL_SELECT"
   send symbol
   unpickle' "Bool" <$> receive
+
+-- | Get current price information for a trading symbol
+--
+-- This function retrieves real-time price data including bid, ask, spread,
+-- volume and timestamp information for the specified symbol.
+--
+-- ==== __Examples__
+--
+-- >>> currentPriceGET "EURUSD"
+-- Right CurrentPrice{cpSymbol="EURUSD", cpBid=1.0850, cpAsk=1.0852, cpSpread=0.0002, ...}
+--
+-- >>> currentPriceGET "INVALID_SYMBOL"  
+-- Left "No tick data available for INVALID_SYMBOL"
+currentPriceGET :: String -> IO (Either String CurrentPrice)
+currentPriceGET symbol = do
+  -- Follow established command pattern (uppercase commands)
+  send "SYMBOL_INFO_TICK"
+  send symbol
+  
+  -- Read the response following the established pattern
+  result <- unpickle' "String" <$> receive
+  
+  -- Check if response indicates an error
+  if "error:" `isPrefixOf` result
+    then return $ Left (drop 6 result) -- Remove "error:" prefix
+    else parseCurrentPriceFromFields symbol
+
+-- | Parse current price by reading individual fields from Python server
+-- Following the established pattern of reading fields sequentially
+parseCurrentPriceFromFields :: String -> IO (Either String CurrentPrice)
+parseCurrentPriceFromFields symbol = do
+  bid        <- unpickle' "Double" <$> receive  -- bid price
+  ask        <- unpickle' "Double" <$> receive  -- ask price
+  lastPrice  <- unpickle' "Double" <$> receive  -- last price
+  volume     <- unpickle' "Int" <$> receive     -- volume
+  timeEpoch  <- unpickle' "Integer" <$> receive -- time (seconds)
+  timeMsc    <- unpickle' "Integer" <$> receive -- time_msc (milliseconds)
+  flags      <- unpickle' "Int" <$> receive     -- flags
+  volReal    <- unpickle' "Double" <$> receive  -- volume_real
+  
+  let utcTime = secondsToUTCTime timeEpoch      -- Convert using existing utility
+  let spread = ask - bid                        -- Calculate spread
+  
+  return $ Right $ CurrentPrice
+    { cpSymbol     = T.pack symbol
+    , cpBid        = bid
+    , cpAsk        = ask
+    , cpSpread     = spread
+    , cpLast       = lastPrice
+    , cpVolume     = volume
+    , cpTime       = utcTime  
+    , cpTimeMsc    = timeMsc
+    , cpFlags      = flags
+    , cpVolumeReal = volReal
+    }
 
 orderCheck :: MqlTradeRequest -> IO OrderSendResult
 orderCheck request = do

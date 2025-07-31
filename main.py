@@ -333,6 +333,41 @@ for line in sys.stdin:
         symbol = sys.stdin.readline().strip()
         result = mt5.symbol_info(symbol)
         sendSymbol(result)
+    elif line == 'SYMBOL_INFO_TICK':
+        symbol = sys.stdin.readline().strip()
+        log(f"Received command SYMBOL_INFO_TICK for symbol: {symbol}")
+        
+        try:
+            # Step 1: Ensure symbol is selected (following SYMBOL_SELECT pattern)
+            if not mt5.symbol_select(symbol, True):
+                error_msg = f"error:Failed to select symbol {symbol}"
+                send(error_msg)
+                continue
+                
+            # Step 2: Get tick information
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                error_info = mt5.last_error()
+                error_msg = f"error:No tick data available for {symbol}, MT5 error: {error_info}"
+                send(error_msg)
+                continue
+                
+            # Step 3: Send success indicator first (following established pattern)
+            send("success")
+            
+            # Step 4: Send tick data fields individually (following sendLog pattern)
+            send(tick.bid, "bid")
+            send(tick.ask, "ask") 
+            send(tick.last, "last")
+            send(tick.volume, "volume")
+            send(tick.time, "time")
+            send(tick.time_msc, "time_msc")
+            send(tick.flags, "flags")
+            send(tick.volume_real, "volume_real")
+            
+        except Exception as e:
+            error_msg = f"error:Exception in SYMBOL_INFO_TICK: {str(e)}"
+            send(error_msg)
     elif line == 'ORDER_CHECK' or line == 'ORDER_SEND':
         tr = getTradeRequest()
         if line == 'ORDER_SEND':

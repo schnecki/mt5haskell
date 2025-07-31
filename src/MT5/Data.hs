@@ -10,9 +10,11 @@ module MT5.Data
   , module MT5.Data.MqlTradeRequest
   , module MT5.Data.SymbolInfo
   , module MT5.Data.OrderSendResult
+  , module MT5.Data.CurrentPrice
   ) where
 
 import           MT5.Data.AccountInfo
+import           MT5.Data.CurrentPrice
 import           MT5.Data.MqlTradeRequest
 import           MT5.Data.OrderSendResult
 import           MT5.Data.OrderState

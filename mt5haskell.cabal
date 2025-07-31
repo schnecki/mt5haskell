@@ -32,6 +32,7 @@ library
       MT5.Config
       MT5.Data
       MT5.Data.AccountInfo
+      MT5.Data.CurrentPrice
       MT5.Data.MqlTradeRequest
       MT5.Data.OrderSendResult
       MT5.Data.OrderState
@@ -95,6 +96,8 @@ test-suite mt5haskell-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      MT5.APISpec
+      MT5.Data.CurrentPriceSpec
       Paths_mt5haskell
   autogen-modules:
       Paths_mt5haskell

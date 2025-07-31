@@ -28,6 +28,10 @@ main = do
       ordersGet Nothing Nothing >>= print
       putStrLn $ "OrdersGet done"
       positionsGet >>= print
+      putStrLn "\n=== Current Price Test ==="
+      putStrLn "Getting current price for EURUSD..."
+      result <- currentPriceGET "EURUSD"
+      putStrLn $ "Result: " ++ show result
       putStr "Press enter to exit" >> hFlush stdout
       -- symbolSelect "EURJPY.pro" >>= print
       -- symbolInfo "EURJPY.pro" >>= print
