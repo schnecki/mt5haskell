@@ -61,6 +61,7 @@ library
     , deepseq
     , directory
     , easy-logger
+    , filepath
     , process
     , python-pickle
     , regex-compat
@@ -84,6 +85,7 @@ executable mt5haskell
     , deepseq
     , directory
     , easy-logger
+    , filepath
     , mt5haskell
     , process
     , python-pickle
@@ -111,6 +113,7 @@ test-suite mt5haskell-test
     , deepseq
     , directory
     , easy-logger
+    , filepath
     , mt5haskell
     , process
     , python-pickle
