@@ -67,3 +67,6 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - mt5haskell
+    - tasty
+    - tasty-hunit
+    - tasty-quickcheck

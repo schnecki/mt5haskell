@@ -351,6 +351,26 @@ for line in sys.stdin:
         sendLog(xs, 'request_id')
         sendLog(xs, 'retcode_external')
 
+    elif line == 'ORDER_CANCEL':
+        log("Received command ORDER_CANCEL")
+        ticket = int(sys.stdin.readline().strip())
+        cancel_request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": ticket,
+        }
+        result = mt5.order_send(cancel_request)
+        xs = result._asdict()
+        sendLog(xs, 'retcode')
+        sendLog(xs, 'deal')
+        sendLog(xs, 'order')
+        sendLog(xs, 'volume')
+        sendLog(xs, 'price')
+        sendLog(xs, 'bid')
+        sendLog(xs, 'ask')
+        sendLog(xs, 'comment')
+        sendLog(xs, 'request_id')
+        sendLog(xs, 'retcode_external')
+
     elif line == 'ERROR':
         formatString = sys.stdin.readline().strip()
         send(formatString.format(account, mt5.last_error()))

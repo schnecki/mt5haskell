@@ -11,6 +11,8 @@ module MT5.API
   , symbolInfo
   , symbolsGet
   , symbolSelect
+  , cancelOrderPOST
+  , cancelAllOrdersPOST
   , orderCheck
   , orderSend
   , ordersGet
@@ -209,8 +211,42 @@ orderSend request = do
   sendMqlTradeRequest request
   readOrderSendResult
 
+-- | Cancel a pending order by ticket number
+-- 
+-- Sends a cancellation request for the specified order ticket.
+-- Only works for pending orders that haven't been executed yet.
+-- 
+-- Returns 'TRADE_RETCODE_DONE' on successful cancellation.
+cancelOrderPOST :: Int                -- ^ Order ticket number to cancel
+                -> IO OrderSendResult -- ^ Result of the cancellation request
+cancelOrderPOST orderTicket = do
+  send "ORDER_CANCEL"
+  send (show orderTicket)
+  readOrderSendResult
 
--- TODO: CancelOrderPOST, CancelAllOrdersPOST, CurrentPriceGET, InstrumentCandleGET,
+-- | Cancel all pending orders in the account
+--
+-- Retrieves all pending orders and attempts to cancel each one individually.
+-- Returns a list of cancellation results, one per order.
+--
+-- * Empty list if no pending orders exist
+-- * Partial results if some cancellations fail
+-- * Each result contains detailed information about the cancellation attempt
+--
+-- @since 0.1.0.0
+cancelAllOrdersPOST :: IO [OrderSendResult]
+cancelAllOrdersPOST = do
+  -- Phase 1: Get all pending orders
+  orders <- ordersGet Nothing Nothing
+  
+  -- Phase 2: Cancel each order individually
+  mapM cancelSingleOrder orders
+  where
+    cancelSingleOrder :: TradeOrder -> IO OrderSendResult
+    cancelSingleOrder order = cancelOrderPOST (tradeOrderTicket order)
+
+
+-- TODO: CurrentPriceGET, InstrumentCandleGET,
 
 
 -- FIX MAPPING: OpenTradesGET, AccountSummaryGET

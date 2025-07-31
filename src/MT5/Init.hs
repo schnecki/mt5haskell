@@ -6,6 +6,7 @@ module MT5.Init
     ) where
 
 import           Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import           Control.Exception  (catch, SomeException, throwIO)
 import           Control.Monad
 import qualified Data.ByteString    as B
 import           Data.IORef
@@ -16,7 +17,7 @@ import qualified Data.Text          as T
 import           EasyLogger
 import           GHC.IO
 import           GHC.IO.Handle
-import           System.Directory   (doesDirectoryExist, makeAbsolute)
+import           System.Directory   (doesDirectoryExist, makeAbsolute, removeDirectoryRecursive)
 import           System.Exit
 import           System.IO
 import           System.IO.Unsafe   (unsafePerformIO)
@@ -26,8 +27,6 @@ import           Text.Regex
 import           MT5.Communication
 import           MT5.Config
 import           MT5.PyProc
-
-import           Debug.Trace
 
 
 venvPython :: Config -> IO FilePath
@@ -55,44 +54,86 @@ createPythonProcess config
 startMT5 :: Config -> IO Config
 startMT5 config = do
   cloneMT5Linux
-  newInstall <- createVenv
+  -- Check if this is a new installation by checking venv directory existence
+  venvExists <- doesDirectoryExist (venvDir config)
+  let newInstall = not venvExists
+  -- Install Windows Python libraries first, then create/setup Linux venv
   config' <- installMT5InWine newInstall
+  when newInstall createVenv
   startMT5Server config'
   threadDelay (1 * 10 ^ 6) -- give it some time to startup
   createPythonProcess config'
   setGlobalConfig config'
   return config'
   where
-    installMT5InWine :: Bool -> IO Config
-    installMT5InWine newInstall = do
-      winPythons <- lines <$> readProcess "locate" ["python.exe"] []
-      when (null winPythons) $
-        error "Cannot find python.exe (wine python installation). See output of `locate python.exe`"
-      let noVenvWinPythons = fromMaybe winPythons $ toMaybe (filter (not . T.isInfixOf "venv" . T.pack) winPythons)
-          winPython = head $ sortOn (Down . getPythonVersion) noVenvWinPythons
-          winPip = subRegex (mkRegex "/python.exe") winPython "" ++ "/Scripts/pip.exe"
-      $(logInfo) $ "Using Windows Python at " ++ winPython
-      $(logInfo) $ "Using Windows pip at " ++ winPip
-      when newInstall $ do
-        pipInstall winPip "MetaTrader5"
-        -- pipInstall winPip "json"
-        -- pipUpgrade winPip "MetaTrader5"
-        pipInstall winPip "-e /tmp/mt5linux/"
-        -- pipInstall winPip "matplotlib"
-        -- pipInstall winPip "pandas"
-        -- pipInstall winPip "-r /tmp/mt5linux/requirements.txt"
-      return $ config {winePython = winPython, winePip = winPip}
+    -- | Helper function to locate executables using the locate command
+    locateExecutable :: String -> IO String
+    locateExecutable executable = do
+      $(logInfoText) $ "Using program locate to find " <> T.pack executable
+      (exitCode, stdOut, stdErr) <- readProcessWithExitCode "locate" [executable] []
+      when (exitCode /= ExitSuccess) $ do
+        $(logError) $ "locate " ++ executable ++ " failed with exit code: " ++ show exitCode
+        $(logError) $ "stdout: " ++ stdOut
+        $(logError) $ "stderr: " ++ stdErr
+        error $ "Could not find " ++ executable ++ ". Make sure you have (i) wine installed, (ii) " ++ 
+          executable ++ " installed in wine, and (iii) the locate database is up to date."
+      $(logInfo) $ "locate " ++ executable ++ " succeeded: " ++ stdOut
+      -- Parse the output to get the first executable path
+      let executables = lines stdOut
+      $(logInfo) $ "Found " ++ executable ++ ": " ++ show executables
+      when (null executables) $ 
+        error $ "No " ++ executable ++ " found in locate database"
+      let noVenvExecutables = fromMaybe executables $ toMaybe (filter (not . T.isInfixOf "venv" . T.pack) executables)
+      when (null noVenvExecutables) $
+        error $ "All found " ++ executable ++ " instances are in virtual environments"
+      return $ head $ sortOn (Down . getPythonVersion) noVenvExecutables
       where
         toMaybe :: [a] -> Maybe [a]
         toMaybe [] = Nothing
         toMaybe xs = Just xs
-        getPythonVersion :: String -> String
-        getPythonVersion str = subRegex (mkRegex "^.*/([pP]ython[0-9]+/python.exe)$") str "\\1"
+        getPythonVersion :: String -> String  
+        getPythonVersion str = subRegex (mkRegex "^.*/([pP]ython[0-9]+)/.*") str "\\1"
+
+
+    installMT5InWine :: Bool -> IO Config
+    installMT5InWine newInstall = do
+      -- Wrap the installation in a try-catch to clean up venv on error
+      installAction `catch` handleError
+      where
+        installAction = do
+          winPython <- locateExecutable "python.exe"
+          winPip <- locateExecutable "pip.exe"
+          $(logInfo) $ "Using Windows Python at " ++ winPython
+          $(logInfo) $ "Using Windows pip at " ++ winPip
+          when newInstall $ do
+            pipInstall winPip "MetaTrader5"
+            -- pipInstall winPip "json"
+            -- pipUpgrade winPip "MetaTrader5"
+            pipInstall winPip "-e /tmp/mt5linux/"
+            -- pipInstall winPip "matplotlib"
+            -- pipInstall winPip "pandas"
+            -- pipInstall winPip "-r /tmp/mt5linux/requirements.txt"
+          return $ config {winePython = winPython, winePip = winPip}
+        
+        handleError :: SomeException -> IO Config
+        handleError e = do
+          $(logError) $ "Error during MT5 Wine installation: " ++ show e
+          $(logInfoText) $ "Cleaning up venv directory: " <> T.pack (venvDir config)
+          venvExists <- doesDirectoryExist (venvDir config)
+          when venvExists $ do
+            $(logInfoText) "Removing venv directory to prevent inconsistent state"
+            removeDirectoryRecursive (venvDir config)
+          $(logInfoText) "Venv cleanup completed, rethrowing error"
+          throwIO e
+        
         pipInstall winPip name = pip winPip ("install " ++ name)
         pipUpgrade winPip name = pipInstall winPip ("--upgrade " ++ name)
         pip winPip cmd = do
-          res <- spawnCommand ("/usr/bin/wine " ++ winPip ++ " " ++ cmd) >>= waitForProcess
-          when (res /= ExitSuccess) $ error $ "ERROR: Could not run pip " ++ cmd ++ " Code: " ++ show res
+          let fullCmd = "/usr/bin/wine " ++ winPip ++ " " ++ cmd
+          $(logInfo) $ "Running pip command: " ++ fullCmd
+          res <- spawnCommand fullCmd >>= waitForProcess
+          when (res /= ExitSuccess) $ error $ "ERROR Cmd: '" ++ fullCmd ++ "' Result Code: " ++ show res
+
     -- | Starts the MT5 Server
     startMT5Server :: Config -> IO ()
     startMT5Server config' = do
@@ -120,22 +161,17 @@ startMT5 config = do
         unless exists $ do callProcess "git" ["clone", mt5linuxGitRepo config, "/tmp/mt5linux"]
     -- | Create venv and install libs. Only performs install if virtualenv is not initialized yet. Reinstall by
     -- deleting the folder [venvDir].
-    createVenv :: IO Bool
+    createVenv :: IO ()
     createVenv = do
-      venvExists <- doesDirectoryExist (venvDir config)
-      if venvExists
-        then return False
-        else do
-        pythons <-
-          filter ('-' `notElem`) . filter (T.isInfixOf "python3." . T.pack) . lines <$>
-          readProcess "ls" ["/usr/bin/"] ""
-        when (null pythons) $
-          error "Could not find a compatible version of python (python <=3.11). Looked for /usr/bin/python3*"
-        let python = last pythons
-        putStrLn $ "Using python version: " ++ python
-        callProcess python ["-m", "venv", venvDir config]
-        pipInstall "-e /tmp/mt5linux"
-        return True
+      pythons <-
+        filter ('-' `notElem`) . filter (T.isInfixOf "python3." . T.pack) . lines <$>
+        readProcess "ls" ["/usr/bin/"] ""
+      when (null pythons) $
+        error "Could not find a compatible version of python (python <=3.11). Looked for /usr/bin/python3*"
+      let python = last pythons
+      putStrLn $ "Using python version: " ++ python
+      callProcess python ["-m", "venv", venvDir config]
+      pipInstall "-e /tmp/mt5linux"
       where
         pipInstall name = pip ("install " ++ name)
         pip cmd = do

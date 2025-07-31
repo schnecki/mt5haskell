@@ -112,6 +112,9 @@ test-suite mt5haskell-test
     , process
     , python-pickle
     , regex-compat
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
     , text
     , time
   default-language: Haskell2010
