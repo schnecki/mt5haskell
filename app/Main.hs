@@ -16,7 +16,7 @@ main = do
   mainAction `finally` flushLoggers
   where
     mainAction = do
-      config <- startMT5 defaultMT5Config
+      config <- startMT5 defaultMT5Config {mt5linuxLocalPath = Just "./mt5linux/"}
       -- putStr "Press enter to login" >> hFlush stdout
       -- _ <- getLine :: IO String
       res <- initialize

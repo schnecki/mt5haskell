@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE InstanceSigs #-}
 module MT5.Communication
     ( send
     , receive
@@ -71,6 +72,7 @@ tryUnpickle' alt bs =
     Right x  -> fromMaybe (alt bs) (fromVal x)
 
 instance {-# OVERLAPS #-} FromValue String where
+  fromVal :: Value -> Maybe String
   fromVal = fmap T.unpack . fromVal
 
 

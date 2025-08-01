@@ -362,7 +362,6 @@ startMT5 config = do
   startMT5Server config'''
   threadDelay (1 * 10 ^ 6) -- give it some time to startup
   createPythonProcess config'''
-  setGlobalConfig config'''
   return config'''
   where
     setupPythonEnvironment :: Config -> Bool -> IO Config

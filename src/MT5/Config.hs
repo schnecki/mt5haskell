@@ -5,8 +5,6 @@ module MT5.Config
     ( Config (..)
     , rootDir
     , defaultMT5Config
-    , setGlobalConfig
-    , getGlobalConfig
     , ExecutionEnvironment(..)
     , PythonEnvironment(..)
     , ExecutionMode(..)
@@ -22,7 +20,7 @@ import           System.Directory   (getCurrentDirectory)
 import           System.IO.Unsafe   (unsafePerformIO)
 
 -- | Execution environment detection
-data ExecutionEnvironment = 
+data ExecutionEnvironment =
     WineEnvironment     -- ^ Linux with Wine-accessible Windows Python
   | WSLEnvironment      -- ^ WSL with direct Windows Python access  
   | NativeLinux         -- ^ Pure Linux (fallback, may not support MT5)
@@ -31,7 +29,7 @@ data ExecutionEnvironment =
 -- | Python environment configuration
 data PythonEnvironment = PythonEnvironment
   { pythonExecutable :: FilePath
-  , pipExecutable    :: FilePath  
+  , pipExecutable    :: FilePath
   , executionMode    :: ExecutionMode
   } deriving (Show, Eq, Generic, NFData)
 
@@ -42,18 +40,6 @@ data ExecutionMode =
   deriving (Show, Eq, Generic, NFData)
 
 -- Configuration and detection functions will be implemented in Init.hs
-
-
--- | Python process object, fetchable from within IO so we don't need to pass it to every function/hide it with Reader
-globalConfig :: IORef Config
-globalConfig = unsafePerformIO $ newIORef def
-
-setGlobalConfig :: Config -> IO ()
-setGlobalConfig = writeIORef globalConfig
-
-getGlobalConfig :: IO Config
-getGlobalConfig = readIORef globalConfig
-
 
 data Config =
   Config
@@ -69,7 +55,7 @@ data Config =
 
 
 instance Default Config where
-  def = Config 
+  def = Config
     { venvDir = rootDir ++ "/.venv"
     , winePython = ""
     , winePip = ""
@@ -92,4 +78,5 @@ withExecutionMode :: ExecutionMode -> Config -> Config
 withExecutionMode mode config = config { preferredMode = Just mode }
 
 rootDir :: FilePath
+{-# NOINLINE rootDir #-}
 rootDir = unsafePerformIO getCurrentDirectory

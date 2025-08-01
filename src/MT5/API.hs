@@ -17,17 +17,35 @@ module MT5.API
   , orderSend
   , ordersGet
   , currentPriceGET
+  , getCandleDataRange
+  , getCandleDataFrom
+  , getCandleDataRecent
   ) where
 
 import           Control.DeepSeq
 import           Control.Monad     (replicateM)
 import           Data.List         (isPrefixOf)
 import qualified Data.Text         as T
-import           GHC.Generics
+import           Data.Time         (UTCTime)
+import           Data.Time.Format  (formatTime, defaultTimeLocale)
+import GHC.Generics ( Generic )
 
-import           MT5.Communication
-import           MT5.Data
-import           MT5.Util
+
+import MT5.Communication ( send, receive, unpickle' ) 
+import MT5.Data
+    ( CurrentPrice(..),
+      TradePosition(TradePosition),
+      AccountInfo(AccountInfo),
+      MqlTradeRequest(..),
+      TradeOrder(TradeOrder, tradeOrderTicket),
+      OrderSendResult,
+      readOrderSendResult,
+      SymbolInfo,
+      readSymbolInfo )
+import MT5.Data.Candle
+    ( MT5CandleData(MT5CandleData), MT5Candle(MT5Candle) )
+import MT5.Data.Granularity ( MT5Granularity, toMT5TimeframeInt )
+import MT5.Util ( secondsToUTCTime, mscToUTCTime )
 
 type Symbol = String
 type Ticket = Int
@@ -349,3 +367,125 @@ cancelAllOrdersPOST = do
 --    3834:    def history_deals_get(self,*args,**kwargs):
 --    4000:    def eval(self,command:str):
 --    4003:    def execute(self,command:str)
+
+-- | Get candlestick data using time range
+--
+-- Retrieves OHLC candlestick data for a specific time range using
+-- MT5's copy_rates_range function. Following the same communication
+-- pattern as currentPriceGET for consistency and reliability.
+--
+-- This function sends a COPY_RATES_RANGE command to the Python server
+-- along with the symbol, timeframe, and date range parameters.
+--
+-- ==== __Examples__
+--
+-- >>> import Data.Time
+-- >>> from <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2023-01-01 00:00:00"
+-- >>> to <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2023-01-02 00:00:00"  
+-- >>> getCandleDataRange "EURUSD" M5 from to
+-- Right (MT5CandleData {mt5Candles = [...], mt5Symbol = "EURUSD"})
+--
+-- >>> getCandleDataRange "INVALID" M5 from to
+-- Left "No rate data available for INVALID, MT5 error: ..."
+getCandleDataRange :: String          -- ^ Trading symbol (e.g., "EURUSD")
+                   -> MT5Granularity  -- ^ Timeframe for candles
+                   -> UTCTime         -- ^ Start time (inclusive)
+                   -> UTCTime         -- ^ End time (inclusive)
+                   -> IO (Either String MT5CandleData)
+getCandleDataRange symbol granularity fromTime toTime = do
+  send "COPY_RATES_RANGE"
+  send symbol
+  send $ show $ toMT5TimeframeInt granularity
+  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
+  
+  -- Read response following established pattern (like currentPriceGET)
+  result <- unpickle' "String" <$> receive
+  
+  if "error:" `isPrefixOf` result
+    then return $ Left (drop 6 result)
+    else parseCandleDataFromFields symbol
+
+-- | Get candlestick data using count from specific time
+--
+-- Retrieves a specific number of candlesticks starting from a given time
+-- using MT5's copy_rates_from function. Useful when you need a fixed
+-- number of candles from a specific starting point.
+--
+-- ==== __Examples__
+--
+-- >>> import Data.Time
+-- >>> from <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2023-01-01 00:00:00"
+-- >>> getCandleDataFrom "EURUSD" M5 from 100
+-- Right (MT5CandleData {mt5Candles = [...], mt5Symbol = "EURUSD"})
+getCandleDataFrom :: String          -- ^ Trading symbol
+                  -> MT5Granularity  -- ^ Timeframe for candles  
+                  -> UTCTime         -- ^ Start time
+                  -> Int             -- ^ Number of candles to retrieve (max 5000)
+                  -> IO (Either String MT5CandleData)
+getCandleDataFrom symbol granularity fromTime count = do
+  send "COPY_RATES_FROM"
+  send symbol
+  send $ show $ toMT5TimeframeInt granularity
+  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+  send $ show count
+  
+  result <- unpickle' "String" <$> receive
+  
+  if "error:" `isPrefixOf` result
+    then return $ Left (drop 6 result)
+    else parseCandleDataFromFields symbol
+
+-- | Get recent candlestick data (most recent count candles)
+--
+-- Retrieves the most recent candlesticks using MT5's copy_rates_from_pos
+-- function. This is the most efficient way to get recent market data
+-- without specifying exact timestamps.
+--
+-- ==== __Examples__
+--
+-- >>> getCandleDataRecent "EURUSD" M5 50  -- Last 50 M5 candles
+-- Right (MT5CandleData {mt5Candles = [...], mt5Symbol = "EURUSD"})
+--
+-- >>> getCandleDataRecent "GBPUSD" H1 24  -- Last 24 H1 candles (24 hours)
+-- Right (MT5CandleData {mt5Candles = [...], mt5Symbol = "GBPUSD"})
+getCandleDataRecent :: String          -- ^ Trading symbol
+                    -> MT5Granularity  -- ^ Timeframe for candles
+                    -> Int             -- ^ Number of recent candles (max 5000)
+                    -> IO (Either String MT5CandleData)
+getCandleDataRecent symbol granularity count = do
+  send "COPY_RATES_FROM_POS"
+  send symbol
+  send $ show $ toMT5TimeframeInt granularity
+  send "0"  -- start from most recent (position 0)
+  send $ show count
+  
+  result <- unpickle' "String" <$> receive
+  
+  if "error:" `isPrefixOf` result
+    then return $ Left (drop 6 result)
+    else parseCandleDataFromFields symbol
+
+-- | Parse candle data by reading individual fields from Python server
+--
+-- Following the established pattern of reading fields sequentially
+-- (like parseCurrentPriceFromFields). This maintains consistency with
+-- the existing communication protocol and ensures reliable data transfer.
+--
+-- The function reads the candle count first, then iterates to read
+-- each candle's OHLC data sequentially, using the existing utility
+-- functions for time conversion.
+parseCandleDataFromFields :: String -> IO (Either String MT5CandleData)
+parseCandleDataFromFields symbol = do
+  candleCount <- unpickle' "Int" <$> receive
+  candles <- replicateM candleCount readSingleCandle
+  return $ Right $ MT5CandleData candles symbol
+  where
+    readSingleCandle :: IO MT5Candle
+    readSingleCandle = MT5Candle
+      <$> (secondsToUTCTime . unpickle' "Integer" <$> receive)  -- time (using existing utility)
+      <*> (unpickle' "Double" <$> receive)                     -- open
+      <*> (unpickle' "Double" <$> receive)                     -- high  
+      <*> (unpickle' "Double" <$> receive)                     -- low
+      <*> (unpickle' "Double" <$> receive)                     -- close
+      <*> (unpickle' "Int" <$> receive)                        -- volume

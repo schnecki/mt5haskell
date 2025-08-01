@@ -32,7 +32,10 @@ library
       MT5.Config
       MT5.Data
       MT5.Data.AccountInfo
+      MT5.Data.Candle
+      MT5.Data.CandleConfig
       MT5.Data.CurrentPrice
+      MT5.Data.Granularity
       MT5.Data.MqlTradeRequest
       MT5.Data.OrderSendResult
       MT5.Data.OrderState

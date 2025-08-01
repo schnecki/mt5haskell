@@ -406,6 +406,111 @@ for line in sys.stdin:
         sendLog(xs, 'request_id')
         sendLog(xs, 'retcode_external')
 
+    elif line == 'COPY_RATES_RANGE':
+        symbol = sys.stdin.readline().strip()
+        timeframe = int(sys.stdin.readline().strip())
+        date_from_str = sys.stdin.readline().strip()
+        date_to_str = sys.stdin.readline().strip()
+        
+        log(f"Received command COPY_RATES_RANGE for symbol: {symbol}")
+        
+        try:
+            # Parse dates
+            date_from = datetime.datetime.strptime(date_from_str, '%Y-%m-%d %H:%M:%S')
+            date_to = datetime.datetime.strptime(date_to_str, '%Y-%m-%d %H:%M:%S')
+            
+            # Execute MT5 query
+            rates = mt5.copy_rates_range(symbol, timeframe, date_from, date_to)
+            if rates is None:
+                error_info = mt5.last_error()
+                error_msg = f"error:No rate data available for {symbol}, MT5 error: {error_info}"
+                send(error_msg)
+                continue
+                
+            # Send success indicator (following SYMBOL_INFO_TICK pattern)
+            send("success")
+            
+            # Send count of candles
+            send(len(rates), "candle_count")
+            
+            # Send each candle individually (following sendLog pattern)
+            for rate in rates:
+                send(rate['time'], "time")         # timestamp
+                send(rate['open'], "open")         # open price
+                send(rate['high'], "high")         # high price
+                send(rate['low'], "low")           # low price
+                send(rate['close'], "close")       # close price
+                send(rate['tick_volume'], "volume") # volume
+                
+        except Exception as e:
+            error_msg = f"error:Exception in COPY_RATES_RANGE: {str(e)}"
+            send(error_msg)
+
+    elif line == 'COPY_RATES_FROM':
+        symbol = sys.stdin.readline().strip()
+        timeframe = int(sys.stdin.readline().strip())
+        date_from_str = sys.stdin.readline().strip()
+        count = int(sys.stdin.readline().strip())
+        
+        log(f"Received command COPY_RATES_FROM for symbol: {symbol}")
+        
+        try:
+            date_from = datetime.datetime.strptime(date_from_str, '%Y-%m-%d %H:%M:%S')
+            rates = mt5.copy_rates_from(symbol, timeframe, date_from, count)
+            
+            if rates is None:
+                error_info = mt5.last_error()
+                error_msg = f"error:No rate data available for {symbol}, MT5 error: {error_info}"
+                send(error_msg)
+                continue
+                
+            send("success")
+            send(len(rates), "candle_count")
+            
+            for rate in rates:
+                send(rate['time'], "time")
+                send(rate['open'], "open")
+                send(rate['high'], "high")
+                send(rate['low'], "low")
+                send(rate['close'], "close")
+                send(rate['tick_volume'], "volume")
+                
+        except Exception as e:
+            error_msg = f"error:Exception in COPY_RATES_FROM: {str(e)}"
+            send(error_msg)
+
+    elif line == 'COPY_RATES_FROM_POS':
+        symbol = sys.stdin.readline().strip()
+        timeframe = int(sys.stdin.readline().strip())
+        start_pos = int(sys.stdin.readline().strip())
+        count = int(sys.stdin.readline().strip())
+        
+        log(f"Received command COPY_RATES_FROM_POS for symbol: {symbol}")
+        
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, timeframe, start_pos, count)
+            
+            if rates is None:
+                error_info = mt5.last_error()
+                error_msg = f"error:No rate data available for {symbol}, MT5 error: {error_info}"
+                send(error_msg)
+                continue
+                
+            send("success")
+            send(len(rates), "candle_count")
+            
+            for rate in rates:
+                send(rate['time'], "time")
+                send(rate['open'], "open")
+                send(rate['high'], "high")
+                send(rate['low'], "low")
+                send(rate['close'], "close")
+                send(rate['tick_volume'], "volume")
+                
+        except Exception as e:
+            error_msg = f"error:Exception in COPY_RATES_FROM_POS: {str(e)}"
+            send(error_msg)
+
     elif line == 'ERROR':
         formatString = sys.stdin.readline().strip()
         send(formatString.format(account, mt5.last_error()))
