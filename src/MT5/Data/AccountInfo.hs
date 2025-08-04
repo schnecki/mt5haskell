@@ -1,8 +1,8 @@
 module MT5.Data.AccountInfo
   ( AccountInfo(..)
   , AccountMarginMode(..)
-  , AccountStopoutMode
-  , AccountTradeMode
+  , AccountStopoutMode(..)
+  , AccountTradeMode(..)
   ) where
 
 data AccountMarginMode

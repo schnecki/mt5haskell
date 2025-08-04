@@ -116,6 +116,7 @@ Copilot, when explaining architectural patterns, please provide an ASCII diagram
   - **Configuration Logic**: Environment detection and setup validation
 
 - **What We Don't Test**
+  - **Imported Libraries**: Funcionality provided by the Haskell standard library or third-party libraries is assumed to be correct. We only test the functionality of our own code, i.e. the code and functionality of this package, but not the libraries it depends on.
   - **Standard Library Functions**: `map`, `filter`, basic Haskell constructs
   - **Third-party Libraries**: `time`, `bytestring`, etc. (unless our usage has specific constraints)
   - **Platform-specific Behavior**: Unless it affects our business logic

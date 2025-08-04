@@ -102,8 +102,17 @@ test-suite mt5haskell-test
   main-is: Spec.hs
   other-modules:
       MT5.APISpec
+      MT5.CommunicationSpec
+      MT5.ConfigSpec
+      MT5.Data.AccountInfoSpec
       MT5.Data.CandleSpec
       MT5.Data.CurrentPriceSpec
+      MT5.Data.SymbolInfoSpec
+      MT5.Data.TradeOrderSpec
+      MT5.InitSpec
+      MT5.LoggingSpec
+      MT5.PyProcSpec
+      MT5.UtilSpec
       Paths_mt5haskell
   autogen-modules:
       Paths_mt5haskell
@@ -112,6 +121,7 @@ test-suite mt5haskell-test
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , binary
     , bytestring
     , data-default
     , deepseq
@@ -121,10 +131,12 @@ test-suite mt5haskell-test
     , mt5haskell
     , process
     , python-pickle
+    , quickcheck-instances
     , regex-compat
     , tasty
     , tasty-hunit
     , tasty-quickcheck
+    , temporary
     , text
     , time
   default-language: Haskell2010
