@@ -17,6 +17,8 @@ import qualified MT5.ConfigSpec as ConfigSpec
 import qualified MT5.InitSpec as InitSpec
 import qualified MT5.LoggingSpec as LoggingSpec
 import qualified MT5.PyProcSpec as PyProcSpec
+-- Phase 4: Advanced Business Logic & Trading Calculations
+import qualified MT5.BusinessLogicSpec as BusinessLogicSpec
 
 main :: IO ()
 main = defaultMain tests
@@ -38,4 +40,6 @@ tests = testGroup "MT5 Tests"
   , InitSpec.spec
   , LoggingSpec.spec
   , PyProcSpec.spec
+  -- Phase 4: Advanced Business Logic & Trading Calculations
+  , BusinessLogicSpec.spec
   ]
