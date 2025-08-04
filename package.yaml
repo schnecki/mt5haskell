@@ -71,3 +71,9 @@ tests:
     - tasty
     - tasty-hunit
     - tasty-quickcheck
+    - temporary
+    - quickcheck-instances
+    - binary
+    - bytestring
+    - filepath
+    - time
