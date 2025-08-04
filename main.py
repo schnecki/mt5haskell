@@ -29,7 +29,7 @@ def send(x, info = ""):
         if DEBUG:
             sys.stderr.write("Info: " + str(info) + ". Value: '" + str(x) + "' [Class: " + x.__class__.__name__ + "]\n")
             sys.stderr.flush()
-        data = pickle.dumps(x)
+        data = pickle.dumps(x, protocol = 2)
         length = struct.pack('!I', len(data))  # 4-byte big-endian unsigned int
         stdout.write(length)
         stdout.write(data)
