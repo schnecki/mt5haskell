@@ -105,6 +105,21 @@ Copilot, when explaining architectural patterns, please provide an ASCII diagram
   - **Integration/System Tests**: Test the effectful edges and interactions with external systems (databases, APIs). These tests are slower but crucial for overall system correctness.
 - **Cognitive Load Reduction**: Automated tests provide confidence in code changes and refactorings, reducing the fear of introducing regressions. They act as a safety net, allowing developers to focus on new features rather than constantly re-verifying old ones.
 
+
+### Testing Philosophy
+
+- **What We Test**
+  - **Pure Functions**: All business logic, calculations, and data transformations
+  - **Data Type Invariants**: ADT constraints and field validations
+  - **Error Handling**: Edge cases and failure modes in `Either`/`Maybe` returns
+  - **Integration Points**: Communication protocols and data parsing
+  - **Configuration Logic**: Environment detection and setup validation
+
+- **What We Don't Test**
+  - **Standard Library Functions**: `map`, `filter`, basic Haskell constructs
+  - **Third-party Libraries**: `time`, `bytestring`, etc. (unless our usage has specific constraints)
+  - **Platform-specific Behavior**: Unless it affects our business logic
+
 ## 3. Code Cleanliness & Readability
 Write code that is easy to understand, even months later, by yourself or others.
 

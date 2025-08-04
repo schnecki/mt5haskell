@@ -5,7 +5,7 @@ import struct
 import pickle
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import pandas as pd
 from pandas.plotting import register_matplotlib_converters
@@ -17,6 +17,7 @@ mt5 = MetaTrader5(
     # port = 18812
 )
 # import MetaTrader5 as mt5
+
 
 # connect to MetaTrader 5
 
@@ -336,14 +337,14 @@ for line in sys.stdin:
     elif line == 'SYMBOL_INFO_TICK':
         symbol = sys.stdin.readline().strip()
         log(f"Received command SYMBOL_INFO_TICK for symbol: {symbol}")
-        
+
         try:
             # Step 1: Ensure symbol is selected (following SYMBOL_SELECT pattern)
             if not mt5.symbol_select(symbol, True):
                 error_msg = f"error:Failed to select symbol {symbol}"
                 send(error_msg)
                 continue
-                
+
             # Step 2: Get tick information
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
@@ -351,20 +352,20 @@ for line in sys.stdin:
                 error_msg = f"error:No tick data available for {symbol}, MT5 error: {error_info}"
                 send(error_msg)
                 continue
-                
+
             # Step 3: Send success indicator first (following established pattern)
             send("success")
-            
+
             # Step 4: Send tick data fields individually (following sendLog pattern)
             send(tick.bid, "bid")
-            send(tick.ask, "ask") 
+            send(tick.ask, "ask")
             send(tick.last, "last")
             send(tick.volume, "volume")
             send(tick.time, "time")
             send(tick.time_msc, "time_msc")
             send(tick.flags, "flags")
             send(tick.volume_real, "volume_real")
-            
+
         except Exception as e:
             error_msg = f"error:Exception in SYMBOL_INFO_TICK: {str(e)}"
             send(error_msg)
@@ -411,14 +412,14 @@ for line in sys.stdin:
         timeframe = int(sys.stdin.readline().strip())
         date_from_str = sys.stdin.readline().strip()
         date_to_str = sys.stdin.readline().strip()
-        
+
         log(f"Received command COPY_RATES_RANGE for symbol: {symbol}")
-        
+
         try:
             # Parse dates
-            date_from = datetime.datetime.strptime(date_from_str, '%Y-%m-%d %H:%M:%S')
-            date_to = datetime.datetime.strptime(date_to_str, '%Y-%m-%d %H:%M:%S')
-            
+            date_from = datetime.strptime(date_from_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            date_to = datetime.strptime(date_to_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+
             # Execute MT5 query
             rates = mt5.copy_rates_range(symbol, timeframe, date_from, date_to)
             if rates is None:
@@ -426,22 +427,38 @@ for line in sys.stdin:
                 error_msg = f"error:No rate data available for {symbol}, MT5 error: {error_info}"
                 send(error_msg)
                 continue
-                
+
+            # create DataFrame out of the obtained data
+            rates_frame = pd.DataFrame(rates)
+            rates_frame['time']=pd.to_datetime(rates_frame['time'], unit='s')
+            log("rates: " + str(rates_frame))
+
             # Send success indicator (following SYMBOL_INFO_TICK pattern)
             send("success")
-            
+
             # Send count of candles
             send(len(rates), "candle_count")
-            
+
             # Send each candle individually (following sendLog pattern)
+            # for idx in range(0, len(rates)):
+            #     send(int(rates_frame.at[idx, 'time']), "time")         # timestamp
+            #     send(float(rates_frame.at[idx, 'open']), "open")         # open price
+            #     send(float(rates_frame.at[idx, 'high']), "high")         # high price
+            #     send(float(rates_frame.at[idx, 'low']), "low")           # low price
+            #     send(float(rates_frame.at[idx, 'close']), "close")       # close price
+            #     send(int(rates_frame.at[idx, 'tick_volume']), "volume") # volume
+
             for rate in rates:
-                send(rate['time'], "time")         # timestamp
-                send(rate['open'], "open")         # open price
-                send(rate['high'], "high")         # high price
-                send(rate['low'], "low")           # low price
-                send(rate['close'], "close")       # close price
-                send(rate['tick_volume'], "volume") # volume
-                
+                send(int(rate['time']), "time")
+                send(float(rate['open']), "open")
+                send(float(rate['high']), "high")
+                send(float(rate['low']), "low")
+                send(float(rate['close']), "close")
+                send(int(rate['tick_volume']), "volume")
+                send(int(rate['spread']), "spread")
+                send(float(rate['real_volume']), "real_volume")
+
+
         except Exception as e:
             error_msg = f"error:Exception in COPY_RATES_RANGE: {str(e)}"
             send(error_msg)
@@ -451,30 +468,37 @@ for line in sys.stdin:
         timeframe = int(sys.stdin.readline().strip())
         date_from_str = sys.stdin.readline().strip()
         count = int(sys.stdin.readline().strip())
-        
+
         log(f"Received command COPY_RATES_FROM for symbol: {symbol}")
-        
+
         try:
-            date_from = datetime.datetime.strptime(date_from_str, '%Y-%m-%d %H:%M:%S')
+            date_from = datetime.strptime(date_from_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
             rates = mt5.copy_rates_from(symbol, timeframe, date_from, count)
-            
+
             if rates is None:
                 error_info = mt5.last_error()
                 error_msg = f"error:No rate data available for {symbol}, MT5 error: {error_info}"
                 send(error_msg)
                 continue
-                
+
+            # create DataFrame out of the obtained data
+            rates_frame = pd.DataFrame(rates)
+            rates_frame['time']=pd.to_datetime(rates_frame['time'], unit='s')
+            log("rates: " + str(rates_frame))
+
             send("success")
             send(len(rates), "candle_count")
-            
+
             for rate in rates:
-                send(rate['time'], "time")
-                send(rate['open'], "open")
-                send(rate['high'], "high")
-                send(rate['low'], "low")
-                send(rate['close'], "close")
-                send(rate['tick_volume'], "volume")
-                
+                send(int(rate['time']), "time")
+                send(float(rate['open']), "open")
+                send(float(rate['high']), "high")
+                send(float(rate['low']), "low")
+                send(float(rate['close']), "close")
+                send(int(rate['tick_volume']), "volume")
+                send(int(rate['spread']), "spread")
+                send(float(rate['real_volume']), "real_volume")
+
         except Exception as e:
             error_msg = f"error:Exception in COPY_RATES_FROM: {str(e)}"
             send(error_msg)
@@ -484,29 +508,36 @@ for line in sys.stdin:
         timeframe = int(sys.stdin.readline().strip())
         start_pos = int(sys.stdin.readline().strip())
         count = int(sys.stdin.readline().strip())
-        
+
         log(f"Received command COPY_RATES_FROM_POS for symbol: {symbol}")
-        
+
         try:
             rates = mt5.copy_rates_from_pos(symbol, timeframe, start_pos, count)
-            
+
             if rates is None:
                 error_info = mt5.last_error()
                 error_msg = f"error:No rate data available for {symbol}, MT5 error: {error_info}"
                 send(error_msg)
                 continue
-                
+
+            # create DataFrame out of the obtained data
+            rates_frame = pd.DataFrame(rates)
+            rates_frame['time']=pd.to_datetime(rates_frame['time'], unit='s')
+            log("rates: " + str(rates_frame))
+
             send("success")
             send(len(rates), "candle_count")
-            
+
             for rate in rates:
-                send(rate['time'], "time")
-                send(rate['open'], "open")
-                send(rate['high'], "high")
-                send(rate['low'], "low")
-                send(rate['close'], "close")
-                send(rate['tick_volume'], "volume")
-                
+                send(int(rate['time']), "time")
+                send(float(rate['open']), "open")
+                send(float(rate['high']), "high")
+                send(float(rate['low']), "low")
+                send(float(rate['close']), "close")
+                send(int(rate['tick_volume']), "volume")
+                send(int(rate['spread']), "spread")
+                send(float(rate['real_volume']), "real_volume")
+
         except Exception as e:
             error_msg = f"error:Exception in COPY_RATES_FROM_POS: {str(e)}"
             send(error_msg)

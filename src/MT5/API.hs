@@ -23,29 +23,25 @@ module MT5.API
   ) where
 
 import           Control.DeepSeq
-import           Control.Monad     (replicateM)
-import           Data.List         (isPrefixOf)
-import qualified Data.Text         as T
-import           Data.Time         (UTCTime)
-import           Data.Time.Format  (formatTime, defaultTimeLocale)
-import GHC.Generics ( Generic )
+import           Control.Monad        (replicateM)
+import           Data.List            (isPrefixOf)
+import qualified Data.Text            as T
+import           Data.Time            (UTCTime)
+import           Data.Time.Format     (defaultTimeLocale, formatTime)
+import           GHC.Generics         (Generic)
 
 
-import MT5.Communication ( send, receive, unpickle' ) 
-import MT5.Data
-    ( CurrentPrice(..),
-      TradePosition(TradePosition),
-      AccountInfo(AccountInfo),
-      MqlTradeRequest(..),
-      TradeOrder(TradeOrder, tradeOrderTicket),
-      OrderSendResult,
-      readOrderSendResult,
-      SymbolInfo,
-      readSymbolInfo )
-import MT5.Data.Candle
-    ( MT5CandleData(MT5CandleData), MT5Candle(MT5Candle) )
-import MT5.Data.Granularity ( MT5Granularity, toMT5TimeframeInt )
-import MT5.Util ( secondsToUTCTime, mscToUTCTime )
+import           MT5.Communication    (receive, send, unpickle')
+import           MT5.Data             (AccountInfo (AccountInfo),
+                                       CurrentPrice (..), MqlTradeRequest (..),
+                                       OrderSendResult, SymbolInfo,
+                                       TradeOrder (TradeOrder, tradeOrderTicket),
+                                       TradePosition (TradePosition),
+                                       readOrderSendResult, readSymbolInfo)
+import           MT5.Data.Candle      (MT5Candle (MT5Candle),
+                                       MT5CandleData (MT5CandleData))
+import           MT5.Data.Granularity (MT5Granularity, toMT5TimeframeInt)
+import           MT5.Util             (mscToUTCTime, secondsToUTCTime)
 
 type Symbol = String
 type Ticket = Int
@@ -210,17 +206,17 @@ symbolSelect symbol = do
 -- >>> currentPriceGET "EURUSD"
 -- Right CurrentPrice{cpSymbol="EURUSD", cpBid=1.0850, cpAsk=1.0852, cpSpread=0.0002, ...}
 --
--- >>> currentPriceGET "INVALID_SYMBOL"  
+-- >>> currentPriceGET "INVALID_SYMBOL"
 -- Left "No tick data available for INVALID_SYMBOL"
 currentPriceGET :: String -> IO (Either String CurrentPrice)
 currentPriceGET symbol = do
   -- Follow established command pattern (uppercase commands)
   send "SYMBOL_INFO_TICK"
   send symbol
-  
+
   -- Read the response following the established pattern
   result <- unpickle' "String" <$> receive
-  
+
   -- Check if response indicates an error
   if "error:" `isPrefixOf` result
     then return $ Left (drop 6 result) -- Remove "error:" prefix
@@ -238,10 +234,10 @@ parseCurrentPriceFromFields symbol = do
   timeMsc    <- unpickle' "Integer" <$> receive -- time_msc (milliseconds)
   flags      <- unpickle' "Int" <$> receive     -- flags
   volReal    <- unpickle' "Double" <$> receive  -- volume_real
-  
+
   let utcTime = secondsToUTCTime timeEpoch      -- Convert using existing utility
   let spread = ask - bid                        -- Calculate spread
-  
+
   return $ Right $ CurrentPrice
     { cpSymbol     = T.pack symbol
     , cpBid        = bid
@@ -249,7 +245,7 @@ parseCurrentPriceFromFields symbol = do
     , cpSpread     = spread
     , cpLast       = lastPrice
     , cpVolume     = volume
-    , cpTime       = utcTime  
+    , cpTime       = utcTime
     , cpTimeMsc    = timeMsc
     , cpFlags      = flags
     , cpVolumeReal = volReal
@@ -288,10 +284,10 @@ orderSend request = do
   readOrderSendResult
 
 -- | Cancel a pending order by ticket number
--- 
+--
 -- Sends a cancellation request for the specified order ticket.
 -- Only works for pending orders that haven't been executed yet.
--- 
+--
 -- Returns 'TRADE_RETCODE_DONE' on successful cancellation.
 cancelOrderPOST :: Int                -- ^ Order ticket number to cancel
                 -> IO OrderSendResult -- ^ Result of the cancellation request
@@ -314,7 +310,7 @@ cancelAllOrdersPOST :: IO [OrderSendResult]
 cancelAllOrdersPOST = do
   -- Phase 1: Get all pending orders
   orders <- ordersGet Nothing Nothing
-  
+
   -- Phase 2: Cancel each order individually
   mapM cancelSingleOrder orders
   where
@@ -381,7 +377,7 @@ cancelAllOrdersPOST = do
 --
 -- >>> import Data.Time
 -- >>> from <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2023-01-01 00:00:00"
--- >>> to <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2023-01-02 00:00:00"  
+-- >>> to <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2023-01-02 00:00:00"
 -- >>> getCandleDataRange "EURUSD" M5 from to
 -- Right (MT5CandleData {mt5Candles = [...], mt5Symbol = "EURUSD"})
 --
@@ -398,10 +394,10 @@ getCandleDataRange symbol granularity fromTime toTime = do
   send $ show $ toMT5TimeframeInt granularity
   send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
   send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
-  
+
   -- Read response following established pattern (like currentPriceGET)
   result <- unpickle' "String" <$> receive
-  
+
   if "error:" `isPrefixOf` result
     then return $ Left (drop 6 result)
     else parseCandleDataFromFields symbol
@@ -419,7 +415,7 @@ getCandleDataRange symbol granularity fromTime toTime = do
 -- >>> getCandleDataFrom "EURUSD" M5 from 100
 -- Right (MT5CandleData {mt5Candles = [...], mt5Symbol = "EURUSD"})
 getCandleDataFrom :: String          -- ^ Trading symbol
-                  -> MT5Granularity  -- ^ Timeframe for candles  
+                  -> MT5Granularity  -- ^ Timeframe for candles
                   -> UTCTime         -- ^ Start time
                   -> Int             -- ^ Number of candles to retrieve (max 5000)
                   -> IO (Either String MT5CandleData)
@@ -429,9 +425,9 @@ getCandleDataFrom symbol granularity fromTime count = do
   send $ show $ toMT5TimeframeInt granularity
   send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
   send $ show count
-  
+
   result <- unpickle' "String" <$> receive
-  
+
   if "error:" `isPrefixOf` result
     then return $ Left (drop 6 result)
     else parseCandleDataFromFields symbol
@@ -459,9 +455,9 @@ getCandleDataRecent symbol granularity count = do
   send $ show $ toMT5TimeframeInt granularity
   send "0"  -- start from most recent (position 0)
   send $ show count
-  
+
   result <- unpickle' "String" <$> receive
-  
+
   if "error:" `isPrefixOf` result
     then return $ Left (drop 6 result)
     else parseCandleDataFromFields symbol
@@ -485,7 +481,9 @@ parseCandleDataFromFields symbol = do
     readSingleCandle = MT5Candle
       <$> (secondsToUTCTime . unpickle' "Integer" <$> receive)  -- time (using existing utility)
       <*> (unpickle' "Double" <$> receive)                     -- open
-      <*> (unpickle' "Double" <$> receive)                     -- high  
+      <*> (unpickle' "Double" <$> receive)                     -- high
       <*> (unpickle' "Double" <$> receive)                     -- low
       <*> (unpickle' "Double" <$> receive)                     -- close
-      <*> (unpickle' "Int" <$> receive)                        -- volume
+      <*> (unpickle' "Int" <$> receive)                        -- tick_volume
+      <*> (unpickle' "Int" <$> receive)                        -- spread
+      <*> (unpickle' "Double" <$> receive)                     -- real_volume

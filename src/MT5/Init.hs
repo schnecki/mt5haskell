@@ -1,6 +1,6 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 module MT5.Init
     ( startMT5
     , stopMT5
@@ -15,19 +15,20 @@ module MT5.Init
     ) where
 
 import           Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
-import           Control.Exception  (catch, SomeException, throwIO)
-import           Control.Monad      (liftM2, when, unless, filterM, void)
+import           Control.Exception  (SomeException, catch, throwIO)
+import           Control.Monad      (filterM, liftM2, unless, void, when)
 import qualified Data.ByteString    as B
 import           Data.IORef
-import           Data.List          (sortOn, isPrefixOf)
+import           Data.List          (isPrefixOf, sortOn)
 import           Data.Maybe         (fromMaybe, isNothing)
 import           Data.Ord           (Down (..))
 import qualified Data.Text          as T
 import           EasyLogger
 import           GHC.IO
 import           GHC.IO.Handle
-import           System.Directory   (doesDirectoryExist, makeAbsolute, removeDirectoryRecursive, 
-                                    getDirectoryContents, doesFileExist)
+import           System.Directory   (doesDirectoryExist, doesFileExist,
+                                     getDirectoryContents, makeAbsolute,
+                                     removeDirectoryRecursive)
 import           System.Exit
 import           System.FilePath    ((</>))
 import           System.IO
@@ -86,13 +87,13 @@ locateExecutable executable = do
     $(logError) $ "locate " ++ executable ++ " failed with exit code: " ++ show exitCode
     $(logError) $ "stdout: " ++ stdOut
     $(logError) $ "stderr: " ++ stdErr
-    error $ "Could not find " ++ executable ++ ". Make sure you have (i) wine installed, (ii) " ++ 
+    error $ "Could not find " ++ executable ++ ". Make sure you have (i) wine installed, (ii) " ++
       executable ++ " installed in wine, and (iii) the locate database is up to date."
   $(logInfo) $ "locate " ++ executable ++ " succeeded: " ++ stdOut
   -- Parse the output to get the first executable path
   let executables = lines stdOut
   $(logInfo) $ "Found " ++ executable ++ ": " ++ show executables
-  when (null executables) $ 
+  when (null executables) $
     error $ "No " ++ executable ++ " found in locate database"
   let noVenvExecutables = fromMaybe executables $ toMaybe (filter (not . T.isInfixOf "venv" . T.pack) executables)
   when (null noVenvExecutables) $
@@ -102,7 +103,7 @@ locateExecutable executable = do
     toMaybe :: [a] -> Maybe [a]
     toMaybe [] = Nothing
     toMaybe xs = Just xs
-    getPythonVersion :: String -> String  
+    getPythonVersion :: String -> String
     getPythonVersion str = subRegex (mkRegex "^.*/([pP]ython[0-9]+)/.*") str "\\1"
 
 -- | Detect current execution environment
@@ -119,9 +120,9 @@ detectExecutionEnvironment = do
     detectWSL = do
       -- Check for WSL indicators
       hasMntC <- doesDirectoryExist "/mnt/c"
-      hasWslExe <- doesDirectoryExist "/mnt/c/Windows/System32" 
+      hasWslExe <- doesDirectoryExist "/mnt/c/Windows/System32"
       return (hasMntC && hasWslExe)
-    
+
     detectWine = do
       -- Check if wine command is available
       (exitCode, _, _) <- readProcessWithExitCode "which" ["wine"] ""
@@ -132,9 +133,9 @@ detectPythonEnvironments :: IO [PythonEnvironment]
 detectPythonEnvironments = do
   env <- detectExecutionEnvironment
   case env of
-    WSLEnvironment -> detectWSLPython
+    WSLEnvironment  -> detectWSLPython
     WineEnvironment -> detectWinePython
-    NativeLinux -> return []
+    NativeLinux     -> return []
   where
     detectWSLPython = do
       $(logInfo) $ T.pack "Starting WSL Python detection"
@@ -145,14 +146,14 @@ detectPythonEnvironments = do
       $(logInfo) $ "Validated " ++ show (length validPythons) ++ " Python environments"
       mapM_ (\(python, pip) -> $(logInfo) $ "  Valid Python: " ++ python ++ ", Pip: " ++ pip) validPythons
       return $ map createDirectPythonEnv validPythons
-    
+
     detectWinePython = do
       -- Use existing locateExecutable approach
       pythonPath <- locateExecutable "python.exe"
       pipPath <- locateExecutable "pip.exe"
       return [PythonEnvironment pythonPath pipPath WineExecution]
       `catch` \(_ :: SomeException) -> return []
-    
+
     findWSLPythonPaths = do
       -- Search common Windows Python installation paths
       let basePaths = [ "/mnt/c/Users"
@@ -169,7 +170,7 @@ detectPythonEnvironments = do
       foundPaths <- filterM doesDirectoryExist basePaths
       $(logInfo) $ "Found existing base directories: " ++ show foundPaths
       concatMapM findPythonInPath foundPaths
-    
+
     findPythonInPath basePath = do
       $(logInfo) $ "Searching for Python in path: " ++ basePath
       if "/mnt/c/Users" `isPrefixOf` basePath
@@ -184,38 +185,38 @@ detectPythonEnvironments = do
           $(logInfo) $ "Found existing Python directories: " ++ show existingDirs
           concatMapM findPythonExecutables existingDirs
         else findPythonExecutables basePath
-    
+
     findPythonExecutables dir = do
       $(logInfo) $ "Searching for executables in: " ++ dir
       -- Check if this directory directly contains python.exe (for direct installs)
       let directPython = dir </> "python.exe"
       let directPip = dir </> "Scripts/pip.exe"
       directExists <- liftM2 (&&) (doesFileExist directPython) (doesFileExist directPip)
-      
+
       -- Also check version subdirectories (for Windows Python installs)
       subDirs <- getDirectoryContents dir
         `catch` \(_ :: SomeException) -> return []
       let versionDirs = filter (\d -> not (d `elem` [".", ".."]) && "Python" `isPrefixOf` d) subDirs
       $(logInfo) $ "Found potential Python version directories: " ++ show versionDirs
-      
+
       versionResults <- concatMapM (\vDir -> do
         let versionPath = dir </> vDir
         let versionPython = versionPath </> "python.exe"
         let versionPip = versionPath </> "Scripts/pip.exe"
         $(logInfo) $ "Checking version path: " ++ versionPath
         versionExists <- liftM2 (&&) (doesFileExist versionPython) (doesFileExist versionPip)
-        if versionExists 
+        if versionExists
           then do
             $(logInfo) $ "Found valid Python installation at: " ++ versionPath
             return [(versionPython, versionPip)]
           else return []
         ) versionDirs
-      
+
       let directResult = if directExists then [(directPython, directPip)] else []
       let allResults = directResult ++ versionResults
       $(logInfo) $ "Total Python installations found in " ++ dir ++ ": " ++ show (length allResults)
       return allResults
-    
+
     validatePythonPath (pythonPath, pipPath) = do
       -- Test if Python can be executed (Windows exe in WSL can be called directly)
       $(logInfo) $ "Validating Python path: " ++ pythonPath
@@ -226,17 +227,17 @@ detectPythonEnvironments = do
       let (exitCode, stdout, stderr) = result
       $(logInfo) $ "Validation result for " ++ pythonPath ++ ": " ++ show exitCode ++ ", stdout: " ++ show stdout ++ ", stderr: " ++ show stderr
       return (exitCode == ExitSuccess)
-    
-    createDirectPythonEnv (pythonPath, pipPath) = 
+
+    createDirectPythonEnv (pythonPath, pipPath) =
       PythonEnvironment pythonPath pipPath DirectExecution
 
 -- | Choose best Python environment based on availability and preferences
 selectBestPythonEnvironment :: [PythonEnvironment] -> Maybe ExecutionMode -> Maybe PythonEnvironment
 selectBestPythonEnvironment [] _ = Nothing
 selectBestPythonEnvironment envs Nothing = Just (head envs)  -- Take first available
-selectBestPythonEnvironment envs (Just preferredMode) = 
+selectBestPythonEnvironment envs (Just preferredMode) =
   case filter (\env -> executionMode env == preferredMode) envs of
-    [] -> Just (head envs)  -- Fallback to first available if preferred not found
+    []            -> Just (head envs)  -- Fallback to first available if preferred not found
     (preferred:_) -> Just preferred
 
 -- | Auto-detect and create optimal configuration
@@ -249,12 +250,12 @@ autoDetectConfig config = do
   mapM_ (\penv -> $(logInfo) $ "  Environment: " ++ show penv) pythonEnvs
   let selectedEnv = selectBestPythonEnvironment pythonEnvs (preferredMode config)
   $(logInfo) $ "Selected Python environment: " ++ show selectedEnv
-  
+
   -- Update legacy fields for backward compatibility
   let (winePython', winePip') = case selectedEnv of
         Just (PythonEnvironment python pip _) -> (python, pip)
         Nothing -> (winePython config, winePip config)
-  
+
   return config
     { executionEnv = Just env
     , pythonEnv = selectedEnv
@@ -263,7 +264,7 @@ autoDetectConfig config = do
     }
 
 -- =====================================================================
--- Repository Management Functions  
+-- Repository Management Functions
 -- =====================================================================
 
 -- | Determine mt5linux repository path based on config
@@ -281,7 +282,7 @@ setupMT5LinuxRepository :: Config -> IO FilePath
 setupMT5LinuxRepository config = do
   repoPath <- resolveMT5LinuxPath config
   exists <- doesDirectoryExist repoPath
-  
+
   if exists
     then do
       $(logInfo) $ "Using existing mt5linux repository at: " ++ repoPath
@@ -309,7 +310,7 @@ executePythonCommand env cmd args = case executionMode env of
   WineExecution -> do
     let fullCmd = "/usr/bin/wine " ++ cmd
     spawnCommand (unwords (fullCmd : args)) >>= waitForProcess
-  DirectExecution -> 
+  DirectExecution ->
     spawnCommand (unwords (cmd : args)) >>= waitForProcess
 
 -- | Execute pip install with environment-appropriate method
@@ -323,8 +324,8 @@ pipInstallWithEnv env repoPath package = do
                        then return $ map (\c -> if c == '\\' then '/' else c) (strip stdout)  -- Convert backslashes to forward slashes
                        else return repoPath  -- Fallback to original path
                    else return repoPath
-  
-  let (args, packageDesc) = if "-e " `isPrefixOf` package 
+
+  let (args, packageDesc) = if "-e " `isPrefixOf` package
                               then (["install", "-e", windowsPath], package ++ " from " ++ windowsPath)  -- For editable installs
                               else (["install", package], package)                                       -- For normal packages
   $(logInfo) $ "Installing package: " ++ packageDesc ++ " using " ++ show (executionMode env)
@@ -347,15 +348,15 @@ startMT5 config = do
   config' <- if isNothing (executionEnv config) || isNothing (pythonEnv config)
                then autoDetectConfig config
                else return config
-  
+
   -- 2. Setup repository (clone or use existing)
   repoPath <- setupMT5LinuxRepository config'
   let config'' = config' { mt5linuxLocalPath = Just repoPath }
-  
+
   -- Check if this is a new installation by checking venv directory existence
   venvExists <- doesDirectoryExist (venvDir config'')
   let newInstall = not venvExists
-  
+
   -- Install Windows Python libraries first, then create/setup Linux venv
   config''' <- setupPythonEnvironment config'' newInstall
   when newInstall createVenv
@@ -365,7 +366,7 @@ startMT5 config = do
   return config'''
   where
     setupPythonEnvironment :: Config -> Bool -> IO Config
-    setupPythonEnvironment cfg newInstall = 
+    setupPythonEnvironment cfg newInstall =
       case pythonEnv cfg of
         Just env -> do
           $(logInfo) $ "Using detected Python environment: " ++ show (executionMode env)
@@ -373,7 +374,7 @@ startMT5 config = do
         Nothing -> do
           $(logInfo) $ T.pack "No Python environment detected, falling back to Wine installation"
           installMT5InWine cfg newInstall  -- Fallback to Wine
-    
+
     setupWithDetectedEnv :: Config -> PythonEnvironment -> Bool -> IO Config
     setupWithDetectedEnv cfg env newInstall = do
       repoPath <- resolveMT5LinuxPath cfg
@@ -381,7 +382,7 @@ startMT5 config = do
         pipInstallWithEnv env repoPath "MetaTrader5"
         pipInstallWithEnv env repoPath "-e ."
       return cfg
-    
+
     installMT5InWine :: Config -> Bool -> IO Config
     installMT5InWine cfg newInstall = do
       -- Wrap the installation in a try-catch to clean up venv on error
@@ -401,7 +402,7 @@ startMT5 config = do
             -- pipInstall winPython winPip "pandas"
             -- pipInstall winPython winPip "-r /tmp/mt5linux/requirements.txt"
           return $ cfg {winePython = winPython, winePip = winPip}
-        
+
         handleError :: SomeException -> IO Config
         handleError e = do
           $(logError) $ "Error during MT5 Wine installation: " ++ show e
@@ -412,14 +413,14 @@ startMT5 config = do
             removeDirectoryRecursive (venvDir cfg)
           $(logInfoText) "Venv cleanup completed, rethrowing error"
           throwIO e
-        
+
         pipInstall winPython winPip name = pip winPython winPip ("install " ++ name)
         pipUpgrade winPython winPip name = pipInstall winPython winPip ("--upgrade " ++ name)
         pip winPython winPip cmd = do
           -- Create a Wine environment for consistent execution
           let wineEnv = PythonEnvironment winPython winPip WineExecution
           exitCode <- executePythonCommand wineEnv winPip (words cmd)
-          when (exitCode /= ExitSuccess) $ 
+          when (exitCode /= ExitSuccess) $
             error $ "ERROR pip " ++ cmd ++ " failed with exit code: " ++ show exitCode
 
     -- | Starts the MT5 Server
@@ -442,7 +443,7 @@ startMT5 config = do
           (Just devNullWrite)
       $(logInfo) $ "Successfully started mt5linux server. ThreadId: " <> show threadId
       writeIORef mt5ServerThread (threadId, devNullRead, devNullWrite)
-    
+
     -- | Create venv and install libs. Only performs install if virtualenv is not initialized yet. Reinstall by
     -- deleting the folder [venvDir].
     createVenv :: IO ()
@@ -468,6 +469,7 @@ startMT5 config = do
 stopMT5 :: IO ()
 stopMT5 = do
   send "QUIT" >> receive >>= B.putStr
+  putStrLn ""
   threadDelay (1 * 10^6)
   (threadId, devNullRead, devNullWrite) <- readIORef mt5ServerThread
   killThread threadId

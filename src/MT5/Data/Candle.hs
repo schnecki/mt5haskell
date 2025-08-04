@@ -20,21 +20,29 @@ import           Data.Time
 -- and precise types following the principle of making illegal states
 -- unrepresentable.
 --
+-- Includes spread and real volume data for comprehensive market analysis:
+-- - Spread: bid-ask spread in points at the time of candle formation
+-- - Real Volume: actual traded volume (may be 0 for symbols without real volume data)
+--
 -- The naming convention follows the established codebase pattern
 -- with 'mt5' prefix for MT5-specific types.
 --
 -- ==== __Examples__
 --
--- >>> let candle = MT5Candle utcTime 1.0850 1.0855 1.0848 1.0852 1500
+-- >>> let candle = MT5Candle utcTime 1.0850 1.0855 1.0848 1.0852 1500 3 250.5
 -- >>> mt5CandleHigh candle - mt5CandleLow candle
 -- 7.0e-4
+-- >>> mt5CandleSpread candle
+-- 3
 data MT5Candle = MT5Candle
-    { mt5CandleTime   :: !UTCTime  -- ^ Candle timestamp (in UTC)
-    , mt5CandleOpen   :: !Double   -- ^ Opening price
-    , mt5CandleHigh   :: !Double   -- ^ Highest price during period
-    , mt5CandleLow    :: !Double   -- ^ Lowest price during period
-    , mt5CandleClose  :: !Double   -- ^ Closing price
-    , mt5CandleVolume :: !Int      -- ^ Tick volume (number of ticks)
+    { mt5CandleTime       :: !UTCTime  -- ^ Candle timestamp (in UTC)
+    , mt5CandleOpen       :: !Double   -- ^ Opening price
+    , mt5CandleHigh       :: !Double   -- ^ Highest price during period
+    , mt5CandleLow        :: !Double   -- ^ Lowest price during period
+    , mt5CandleClose      :: !Double   -- ^ Closing price
+    , mt5CandleVolume     :: !Int      -- ^ Tick volume (number of ticks)
+    , mt5CandleSpread     :: !Int      -- ^ Spread in points at candle time
+    , mt5CandleRealVolume :: !Double   -- ^ Real volume (actual traded volume)
     } deriving (Show, Eq)
 
 -- | Response wrapper for MT5 candle data

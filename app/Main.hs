@@ -5,9 +5,98 @@ module Main
 
 import           Control.Exception
 import           Control.Monad
+import           Data.Time
 import           EasyLogger
 import           MT5
-import           System.IO
+import           MT5.Data.Candle (MT5Candle(..), MT5CandleData(..))
+
+-- | Example: Get candle data for a specific time range
+-- Demonstrates getCandleDataRange which maps to COPY_RATES_RANGE
+testCandleDataRange :: IO ()
+testCandleDataRange = do
+  putStrLn "\n=== Testing getCandleDataRange (COPY_RATES_RANGE) ==="
+  putStrLn "Getting EURUSD H4 candles from 2025-04-04 00:00:00 to 2025-04-04 18:00:00"
+  
+  from <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2025-04-04 00:00:00"
+  to <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2025-04-04 18:00:00"
+  
+  result <- getCandleDataRange "EURUSD" H4 from to
+  case result of
+    Left err -> putStrLn $ "Error: " ++ err
+    Right candleData -> do
+      putStrLn $ "Success! Retrieved " ++ show (length (mt5Candles candleData)) ++ " candles for " ++ mt5Symbol candleData
+      -- Display first candle with all fields including spread and real volume
+      case mt5Candles candleData of
+        (firstCandle:_) -> do
+          putStrLn "First candle details:"
+          putStrLn $ "  Time: " ++ show (mt5CandleTime firstCandle)
+          putStrLn $ "  OHLC: " ++ show (mt5CandleOpen firstCandle, mt5CandleHigh firstCandle, mt5CandleLow firstCandle, mt5CandleClose firstCandle)
+          putStrLn $ "  Tick Volume: " ++ show (mt5CandleVolume firstCandle)
+          putStrLn $ "  Spread: " ++ show (mt5CandleSpread firstCandle) ++ " points"
+          putStrLn $ "  Real Volume: " ++ show (mt5CandleRealVolume firstCandle)
+        [] -> putStrLn "No candles retrieved"
+
+-- | Example: Get a specific count of candles from a start date
+-- Demonstrates getCandleDataFrom which maps to COPY_RATES_FROM
+testCandleDataFrom :: IO ()
+testCandleDataFrom = do
+  putStrLn "\n=== Testing getCandleDataFrom (COPY_RATES_FROM) ==="
+  putStrLn "Getting last 10 EURUSD M15 candles from 2025-04-04 12:00:00"
+  
+  fromTime <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2025-04-04 12:00:00"
+  
+  result <- getCandleDataFrom "EURUSD" M15 fromTime 10
+  case result of
+    Left err -> putStrLn $ "Error: " ++ err
+    Right candleData -> do
+      putStrLn $ "Success! Retrieved " ++ show (length (mt5Candles candleData)) ++ " candles for " ++ mt5Symbol candleData
+      -- Display summary of all candles
+      mapM_ displayCandleSummary (zip [1::Int ..] (mt5Candles candleData))
+  where
+    displayCandleSummary (idx, candle) = do
+      putStrLn $ "Candle " ++ show idx ++ ": " ++ 
+                 show (mt5CandleTime candle) ++ " | " ++
+                 "Close: " ++ show (mt5CandleClose candle) ++ " | " ++
+                 "Spread: " ++ show (mt5CandleSpread candle) ++ "pts"
+
+-- | Example: Get recent candles using position-based indexing
+-- Demonstrates getCandleDataRecent which maps to COPY_RATES_FROM_POS
+testCandleDataRecent :: IO ()
+testCandleDataRecent = do
+  putStrLn "\n=== Testing getCandleDataRecent (COPY_RATES_FROM_POS) ==="
+  putStrLn "Getting 5 most recent EURUSD M5 candles"
+  
+  result <- getCandleDataRecent "EURUSD" M5 5
+  case result of
+    Left err -> putStrLn $ "Error: " ++ err
+    Right candleData -> do
+      putStrLn $ "Success! Retrieved " ++ show (length (mt5Candles candleData)) ++ " recent candles for " ++ mt5Symbol candleData
+      -- Display detailed information including new fields
+      putStrLn "Recent candles (newest first):"
+      mapM_ displayDetailedCandle (reverse $ zip [1::Int ..] (mt5Candles candleData))
+  where
+    displayDetailedCandle (idx, candle) = do
+      putStrLn $ "  " ++ show idx ++ ". " ++ show (mt5CandleTime candle)
+      putStrLn $ "     OHLC: " ++ formatOHLC candle
+      putStrLn $ "     Volume: " ++ show (mt5CandleVolume candle) ++ " ticks, Real: " ++ show (mt5CandleRealVolume candle)
+      putStrLn $ "     Spread: " ++ show (mt5CandleSpread candle) ++ " points"
+    
+    formatOHLC candle = show (mt5CandleOpen candle) ++ "/" ++ 
+                       show (mt5CandleHigh candle) ++ "/" ++ 
+                       show (mt5CandleLow candle) ++ "/" ++ 
+                       show (mt5CandleClose candle)
+
+-- | Test all candle data retrieval methods
+testAllCandleAPIs :: IO ()
+testAllCandleAPIs = do
+  putStrLn "=== Comprehensive Candle Data API Testing ==="
+  putStrLn "Testing all three MT5 copy_rates_* API methods with new spread and real volume fields"
+  
+  testCandleDataRange
+  testCandleDataFrom  
+  testCandleDataRecent
+  
+  putStrLn "\n=== All Candle API Tests Complete ==="
 
 main :: IO ()
 main = do
@@ -16,59 +105,20 @@ main = do
   mainAction `finally` flushLoggers
   where
     mainAction = do
-      config <- startMT5 defaultMT5Config {mt5linuxLocalPath = Just "./mt5linux/"}
-      -- putStr "Press enter to login" >> hFlush stdout
-      -- _ <- getLine :: IO String
+      _ <- startMT5 defaultMT5Config {mt5linuxLocalPath = Just "../mt5linux/"}
+      
+      putStrLn "=== MT5 Haskell API Demo ==="
+      putStrLn "Initializing MT5 connection..."
+      
       res <- initialize
-      putStrLn $ "Initialize result: " <> show res
-      -- -- res <- login (MT5Login "" "") -- does not work
-      -- putStrLn $ "Login result: " <> show res
-      accountInfo >>= print
-      putStrLn $ "Account Info done"
-      ordersGet Nothing Nothing >>= print
-      putStrLn $ "OrdersGet done"
-      positionsGet >>= print
-      putStrLn "\n=== Current Price Test ==="
-      putStrLn "Getting current price for EURUSD..."
-      result <- currentPriceGET "EURUSD"
-      putStrLn $ "Result: " ++ show result
-      putStr "Press enter to exit" >> hFlush stdout
-      -- symbolSelect "EURJPY.pro" >>= print
-      -- symbolInfo "EURJPY.pro" >>= print
-      -- recurse ""
-      -- stopMT5
-      -- putStrLn ""
-
-    recurse x = do
-      unless (x == "q") $ do
-        symbolsGet "US500*" >>= print
-        _ <- symbolInfo "US500.pro"
-        res <- orderSend
-          $ MqlTradeRequest
-              TRADE_ACTION_PENDING
-              0
-              0
-              "EURUSD.pro"
-              0.10
-              1.1008
-              1.1008
-              1.095
-              1.12
-              3
-              ORDER_TYPE_BUY
-              ORDER_FILLING_FOK
-              ORDER_TIME_GTC
-              0
-              "MT5 test order"
-              0
-              0
-        print res
-        -- Cancel the order immediately after creation
-        case res of
-          orderResult | ordSendOrder orderResult > 0 -> do
-            putStrLn $ "Cancelling order with ticket: " ++ show (ordSendOrder orderResult)
-            cancelResult <- cancelOrderPOST (ordSendOrder orderResult)
-            putStrLn $ "Cancel result: " ++ show cancelResult
-          _ -> putStrLn "Order creation failed, nothing to cancel"
-        getLine >>= recurse
-
+      putStrLn $ "Initialize result: " ++ show res
+      
+      case res of
+        Right () -> do
+          putStrLn "MT5 initialized successfully!"
+          testAllCandleAPIs
+        Left err -> do
+          putStrLn $ "Failed to initialize MT5: " ++ err
+      
+      putStrLn "\nPress enter to exit..."
+      void (getLine :: IO String)
