@@ -19,4 +19,5 @@ data PyProc =
     { pyIn         :: !Handle        -- ^ Python std input
     , pyOut        :: !Handle        -- ^ Python std output
     , pyProcHandle :: !ProcessHandle -- ^ Process handle
+    , pyServerPath :: !FilePath      -- ^ File path to code
     }

@@ -16,25 +16,28 @@ module MT5.Init
 
 import           Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import           Control.Exception  (SomeException, catch, throwIO)
-import           Control.Monad      (filterM, liftM2, unless, void, when)
+import           Control.Monad      (filterM, liftM2, unless, void, when, (<=<))
 import qualified Data.ByteString    as B
 import           Data.IORef
 import           Data.List          (isPrefixOf, sortOn)
 import           Data.Maybe         (fromMaybe, isNothing)
 import           Data.Ord           (Down (..))
 import qualified Data.Text          as T
+import qualified Data.Text.Encoding as Encoding
 import           EasyLogger
 import           GHC.IO
 import           GHC.IO.Handle
 import           System.Directory   (doesDirectoryExist, doesFileExist,
                                      getDirectoryContents, makeAbsolute,
-                                     removeDirectoryRecursive)
+                                     removeDirectoryRecursive, removeFile)
 import           System.Exit
 import           System.FilePath    ((</>))
 import           System.IO
+import           System.IO.Temp     (writeSystemTempFile)
 import           System.Process     hiding (env)
 import           Text.Regex
 
+import           MT5.API
 import           MT5.Communication
 import           MT5.Config
 import           MT5.PyProc
@@ -56,9 +59,14 @@ createPythonProcess config
   -- TODO write python file to /tmp/
  = do
   python <- venvPython config
+  -- pythonPath <- writeSystemTempFile "mt5haskell_python_server" (T.unpack (Encoding.decodeLatin1 pythonCode))
+  let pythonPath = venvDir config </> "python_server.py"
+  fileExists <- doesFileExist pythonPath
+  unless fileExists $
+    writeFile pythonPath (T.unpack (Encoding.decodeLatin1 pythonCode))
   (Just inp, Just out, _, phandle) <-
-    createProcess (proc python ["main.py"]) {cwd = Just ".", std_in = CreatePipe, std_out = CreatePipe}
-  writeIORef pyProc $ PyProc inp out phandle
+    createProcess (proc python [pythonPath]) {cwd = Just ".", std_in = CreatePipe, std_out = CreatePipe}
+  writeIORef pyProc $ PyProc inp out phandle pythonPath
 
 -- =====================================================================
 -- Environment Detection Functions
@@ -344,6 +352,8 @@ pipInstallWithEnv env repoPath package = do
 -- Overwrites the global config.
 startMT5 :: Config -> IO Config
 startMT5 config = do
+  -- 0. Write python code
+
   -- 1. Auto-detect environment if not specified
   config' <- if isNothing (executionEnv config) || isNothing (pythonEnv config)
                then autoDetectConfig config
@@ -363,6 +373,8 @@ startMT5 config = do
   startMT5Server config'''
   threadDelay (1 * 10 ^ 6) -- give it some time to startup
   createPythonProcess config'''
+  -- threadDelay (1 * 10 ^ 6) -- give it some time to startup
+  -- maybe (return ()) (print <=< loginAccount) (login config)
   return config'''
   where
     setupPythonEnvironment :: Config -> Bool -> IO Config
@@ -475,5 +487,7 @@ stopMT5 = do
   killThread threadId
   hClose devNullRead
   hClose devNullWrite
-  PyProc inp out pHandle <- readIORef pyProc
+  PyProc inp out pHandle pythonPath <- readIORef pyProc
   cleanupProcess (Just inp, Just out, Nothing, pHandle)
+  fileExists <- doesFileExist pythonPath
+  when fileExists $ removeFile pythonPath

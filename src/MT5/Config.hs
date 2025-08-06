@@ -1,8 +1,9 @@
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric  #-}
+{-# LANGUAGE DeriveAnyClass    #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE OverloadedStrings #-}
 module MT5.Config
     ( Config (..)
+    , Login (..)
     , rootDir
     , defaultMT5Config
     , ExecutionEnvironment(..)
@@ -16,13 +17,13 @@ import           Control.DeepSeq
 import           Data.Default
 import           Data.IORef
 import           GHC.Generics
-import           System.Directory   (getCurrentDirectory)
-import           System.IO.Unsafe   (unsafePerformIO)
+import           System.Directory (getCurrentDirectory)
+import           System.IO.Unsafe (unsafePerformIO)
 
 -- | Execution environment detection
 data ExecutionEnvironment =
     WineEnvironment     -- ^ Linux with Wine-accessible Windows Python
-  | WSLEnvironment      -- ^ WSL with direct Windows Python access  
+  | WSLEnvironment      -- ^ WSL with direct Windows Python access
   | NativeLinux         -- ^ Pure Linux (fallback, may not support MT5)
   deriving (Show, Eq, Generic, NFData)
 
@@ -39,18 +40,28 @@ data ExecutionMode =
   | DirectExecution     -- ^ Execute Windows binaries directly (WSL)
   deriving (Show, Eq, Generic, NFData)
 
+data Login = Login
+  { account  :: String
+  , password :: String
+    -- , server   :: Maybe String
+    -- , timeout  :: Maybe Int
+  } deriving (Show, Eq, NFData, Generic)
+
+
 -- Configuration and detection functions will be implemented in Init.hs
+
 
 data Config =
   Config
-    { venvDir           :: FilePath                     -- ^ Directory where virtualenv will be installed
-    , winePython        :: String                       -- ^ Legacy field (maintain compatibility)
-    , winePip           :: String                       -- ^ Legacy field (maintain compatibility)
-    , mt5linuxGitRepo   :: String                      -- ^ Git repository URL for mt5linux
-    , mt5linuxLocalPath :: Maybe FilePath              -- ^ User-specified local repository path
-    , pythonEnv         :: Maybe PythonEnvironment     -- ^ Detected Python environment
-    , executionEnv      :: Maybe ExecutionEnvironment  -- ^ Detected execution environment
-    , preferredMode     :: Maybe ExecutionMode         -- ^ User preference override
+    { venvDir           :: FilePath                   -- ^ Directory where virtualenv will be installed
+    , winePython        :: String                     -- ^ Legacy field (maintain compatibility)
+    , winePip           :: String                     -- ^ Legacy field (maintain compatibility)
+    , mt5linuxGitRepo   :: String                     -- ^ Git repository URL for mt5linux
+    , mt5linuxLocalPath :: Maybe FilePath             -- ^ User-specified local repository path
+    , pythonEnv         :: Maybe PythonEnvironment    -- ^ Detected Python environment
+    , executionEnv      :: Maybe ExecutionEnvironment -- ^ Detected execution environment
+    , preferredMode     :: Maybe ExecutionMode        -- ^ User preference override
+    , login             :: Maybe Login                -- ^ Login information. Nothing means default account.
     } deriving (Show, Eq, NFData, Generic)
 
 
@@ -64,6 +75,7 @@ instance Default Config where
     , pythonEnv = Nothing
     , executionEnv = Nothing
     , preferredMode = Nothing
+    , login = Nothing
     }
 
 defaultMT5Config :: Config

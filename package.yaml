@@ -32,6 +32,8 @@ dependencies:
 - python-pickle
 - time
 - filepath
+- file-embed
+- temporary
 
 ghc-options:
 - -Wall

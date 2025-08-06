@@ -3,9 +3,8 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module MT5.API
-  ( MT5Login(..)
-  , initialize
-  , login
+  ( initialize
+  , loginAccount
   , accountInfo
   , positionsGet
   , symbolInfo
@@ -32,6 +31,7 @@ import           GHC.Generics         (Generic)
 
 
 import           MT5.Communication    (receive, send, unpickle')
+import           MT5.Config           (Login (..))
 import           MT5.Data             (AccountInfo (AccountInfo),
                                        CurrentPrice (..), MqlTradeRequest (..),
                                        OrderSendResult, SymbolInfo,
@@ -46,14 +46,6 @@ import           MT5.Util             (mscToUTCTime, secondsToUTCTime)
 type Symbol = String
 type Ticket = Int
 
-
-data MT5Login = MT5Login
-  { account  :: String
-  , password :: String
-    -- , server   :: Maybe String
-    -- , timeout  :: Maybe Int
-  } deriving (Show, Eq, NFData, Generic)
-
 -- | def initialize(self,*args,**kwargs):
 initialize :: IO (Either String ())
 initialize = do
@@ -64,8 +56,8 @@ initialize = do
     else Left <$> getError "failed to initialize to account #{}, error code: {}"
 
 -- | Function login
-login :: MT5Login -> IO (Either String ())
-login MT5Login {..} = do
+loginAccount :: Login -> IO (Either String ())
+loginAccount Login {..} = do
   send "LOGIN"
   send account
   send password
@@ -316,9 +308,6 @@ cancelAllOrdersPOST = do
   where
     cancelSingleOrder :: TradeOrder -> IO OrderSendResult
     cancelSingleOrder order = cancelOrderPOST (tradeOrderTicket order)
-
-
--- TODO: CurrentPriceGET, InstrumentCandleGET,
 
 
 -- FIX MAPPING: OpenTradesGET, AccountSummaryGET

@@ -1,15 +1,17 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs      #-}
 {-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE InstanceSigs #-}
 module MT5.Communication
     ( send
     , receive
     , unpickle'
+    , pythonCode
     ) where
 
 import           Data.Bits              (shiftL, (.|.))
 import qualified Data.ByteString        as B
 import           Data.Char              (ord)
+import           Data.FileEmbed         (embedFileRelative)
 import           Data.IORef
 import           Data.Maybe             (fromMaybe)
 import qualified Data.Text              as T
@@ -26,7 +28,7 @@ import           Debug.Trace
 -- | Send a command + arguments to python stdin
 send :: String -> IO ()
 send cmd = do
-  (PyProc pyIn _ _) <- readIORef pyProc
+  (PyProc pyIn _ _ _) <- readIORef pyProc
   $(logPrintDebug) $ "Sending: " ++ cmd
   hPutStrLn pyIn cmd
   hFlush pyIn
@@ -34,7 +36,7 @@ send cmd = do
 -- | Receive output from stdout of python
 receive :: IO B.ByteString
 receive = do
-  (PyProc _ pyOut _) <- readIORef pyProc
+  (PyProc _ pyOut _ _) <- readIORef pyProc
   readNextObject pyOut
   where
     readNextObject :: Handle -> IO B.ByteString
@@ -76,54 +78,5 @@ instance {-# OVERLAPS #-} FromValue String where
   fromVal = fmap T.unpack . fromVal
 
 
--- errorUnpickle :: String -> B.ByteString -> a
--- errorUnpickle tp x = error $ "Could not parse `" ++ tp ++ "` from: " ++ show x
-
--- unpickle' :: FromValue a => String -> B.ByteString -> a
--- unpickle' tp bs = tryUnpickle' (errorUnpickle tp) bs
-
--- tryUnpickle' :: FromValue a => (B.ByteString -> a) -> B.ByteString -> a
--- tryUnpickle' alt bs =
---   case unpickle bs of
---     Left str -> error str
---     Right x  -> fromMaybe (alt bs) (fromVal x)
-
--- instance {-# OVERLAPS #-} FromValue String where
---     fromVal = fmap T.unpack . fromVal
-
-
--- rcvString :: IO String
--- rcvString = unpickle' "String" <$> receive
-
--- rcvIntList :: IO [Int]
--- rcvIntList = unpickle' "[Int]" <$> receive
-
--- rcvInt :: IO Int
--- rcvInt = unpickle' "Int" <$> receive
-
-
--- rcvDblList :: IO [Double]
--- rcvDblList = tryUnpickle' (pure . tryUnpickle' (errorUnpickle "[Double]")) <$> receive
-
-
--- rcvDbl :: IO Double
--- rcvDbl = unpickle' "Double" <$> receive
-
-
--- -- | Set the environment
--- setEnv :: IO ()
--- setEnv = sendCmd $ EnvSet envName (T.unpack . T.replace "'" "\"" . T.pack $ envArgs)
-
--- getEnv :: IO String
--- getEnv = do
---   sendCmd EnvGet
---   rcvString
-
--- -- | Send exit command and get rid of handles
--- quit :: IO ()
--- quit = do
---   sendCmd Quit
---   rcvString >>= putStrLn
---   (PyProc inp outp phandle) <- readIORef py
---   cleanupProcess (Just inp, Just outp, Nothing, phandle)
---   exitSuccess
+pythonCode :: B.ByteString
+pythonCode = $(embedFileRelative "main.py")

@@ -8,7 +8,7 @@ import           Control.Monad
 import           Data.Time
 import           EasyLogger
 import           MT5
-import           MT5.Data.Candle (MT5Candle(..), MT5CandleData(..))
+import           MT5.Data.Candle   (MT5Candle (..), MT5CandleData (..))
 
 -- | Example: Get candle data for a specific time range
 -- Demonstrates getCandleDataRange which maps to COPY_RATES_RANGE
@@ -16,10 +16,10 @@ testCandleDataRange :: IO ()
 testCandleDataRange = do
   putStrLn "\n=== Testing getCandleDataRange (COPY_RATES_RANGE) ==="
   putStrLn "Getting EURUSD H4 candles from 2025-04-04 00:00:00 to 2025-04-04 18:00:00"
-  
+
   from <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2025-04-04 00:00:00"
   to <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2025-04-04 18:00:00"
-  
+
   result <- getCandleDataRange "EURUSD" H4 from to
   case result of
     Left err -> putStrLn $ "Error: " ++ err
@@ -42,9 +42,9 @@ testCandleDataFrom :: IO ()
 testCandleDataFrom = do
   putStrLn "\n=== Testing getCandleDataFrom (COPY_RATES_FROM) ==="
   putStrLn "Getting last 10 EURUSD M15 candles from 2025-04-04 12:00:00"
-  
+
   fromTime <- parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" "2025-04-04 12:00:00"
-  
+
   result <- getCandleDataFrom "EURUSD" M15 fromTime 10
   case result of
     Left err -> putStrLn $ "Error: " ++ err
@@ -54,7 +54,7 @@ testCandleDataFrom = do
       mapM_ displayCandleSummary (zip [1::Int ..] (mt5Candles candleData))
   where
     displayCandleSummary (idx, candle) = do
-      putStrLn $ "Candle " ++ show idx ++ ": " ++ 
+      putStrLn $ "Candle " ++ show idx ++ ": " ++
                  show (mt5CandleTime candle) ++ " | " ++
                  "Close: " ++ show (mt5CandleClose candle) ++ " | " ++
                  "Spread: " ++ show (mt5CandleSpread candle) ++ "pts"
@@ -65,7 +65,7 @@ testCandleDataRecent :: IO ()
 testCandleDataRecent = do
   putStrLn "\n=== Testing getCandleDataRecent (COPY_RATES_FROM_POS) ==="
   putStrLn "Getting 5 most recent EURUSD M5 candles"
-  
+
   result <- getCandleDataRecent "EURUSD" M5 5
   case result of
     Left err -> putStrLn $ "Error: " ++ err
@@ -80,10 +80,10 @@ testCandleDataRecent = do
       putStrLn $ "     OHLC: " ++ formatOHLC candle
       putStrLn $ "     Volume: " ++ show (mt5CandleVolume candle) ++ " ticks, Real: " ++ show (mt5CandleRealVolume candle)
       putStrLn $ "     Spread: " ++ show (mt5CandleSpread candle) ++ " points"
-    
-    formatOHLC candle = show (mt5CandleOpen candle) ++ "/" ++ 
-                       show (mt5CandleHigh candle) ++ "/" ++ 
-                       show (mt5CandleLow candle) ++ "/" ++ 
+
+    formatOHLC candle = show (mt5CandleOpen candle) ++ "/" ++
+                       show (mt5CandleHigh candle) ++ "/" ++
+                       show (mt5CandleLow candle) ++ "/" ++
                        show (mt5CandleClose candle)
 
 -- | Test all candle data retrieval methods
@@ -91,11 +91,11 @@ testAllCandleAPIs :: IO ()
 testAllCandleAPIs = do
   putStrLn "=== Comprehensive Candle Data API Testing ==="
   putStrLn "Testing all three MT5 copy_rates_* API methods with new spread and real volume fields"
-  
+
   testCandleDataRange
-  testCandleDataFrom  
+  testCandleDataFrom
   testCandleDataRecent
-  
+
   putStrLn "\n=== All Candle API Tests Complete ==="
 
 main :: IO ()
@@ -105,20 +105,24 @@ main = do
   mainAction `finally` flushLoggers
   where
     mainAction = do
+
+
       _ <- startMT5 defaultMT5Config {mt5linuxLocalPath = Just "../mt5linux/"}
-      
+
       putStrLn "=== MT5 Haskell API Demo ==="
       putStrLn "Initializing MT5 connection..."
-      
+
       res <- initialize
       putStrLn $ "Initialize result: " ++ show res
-      
+      putStrLn "Account Info:"
+      accountInfo >>= print
+
       case res of
         Right () -> do
           putStrLn "MT5 initialized successfully!"
           testAllCandleAPIs
         Left err -> do
           putStrLn $ "Failed to initialize MT5: " ++ err
-      
+
       putStrLn "\nPress enter to exit..."
       void (getLine :: IO String)
