@@ -4,3 +4,5 @@
 PLAN.md
 mt5linux/
 PLAN*
+/mt5linux
+/stack.yaml.lock

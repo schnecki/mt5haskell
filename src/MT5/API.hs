@@ -46,7 +46,30 @@ import           MT5.Util             (mscToUTCTime, secondsToUTCTime)
 type Symbol = String
 type Ticket = Int
 
--- | def initialize(self,*args,**kwargs):
+-- | Predefined groups for symbol retrieval.
+data SymbolGroup
+  = Forex                  -- ^ Forex group symbols
+  | CFD                    -- ^ CFD group symbols
+  | Indices                -- ^ Indices group symbols
+  | Commodities            -- ^ Commodities group symbols
+  | CustomSymbolGroup String -- ^ Custom symbol group
+  deriving (Show, Eq)
+
+-- | Convert 'SymbolGroup' to the string expected by the MT5 server.
+symbolGroupToString :: SymbolGroup -> String
+symbolGroupToString grp = case grp of
+  Forex               -> "Forex"
+  CFD                 -> "CFD"
+  Indices             -> "Indices"
+  Commodities         -> "Commodities"
+  CustomSymbolGroup s -> s
+
+-- | Initialize the MetaTrader 5 connection.
+--
+-- Sends the 'INITIALIZE' command to the Python server to set up the MT5 environment.
+-- Returns 'Right ()' on success, or 'Left error' on failure.
+--
+-- Corresponds to MetaTrader5.initialize().
 initialize :: IO (Either String ())
 initialize = do
   send "INITIALIZE"
@@ -55,8 +78,13 @@ initialize = do
     then return $ Right ()
     else Left <$> getError "failed to initialize to account #{}, error code: {}"
 
--- | Function login
-loginAccount :: Login -> IO (Either String ())
+-- | Log in to a MetaTrader 5 account.
+--
+-- Sends the 'LOGIN' command with account credentials to the Python server.
+-- Returns 'Right ()' on success, or 'Left error' on failure.
+--
+loginAccount :: Login           -- ^ Account login credentials (username and password)
+             -> IO (Either String ())
 loginAccount Login {..} = do
   send "LOGIN"
   send account
@@ -67,6 +95,12 @@ loginAccount Login {..} = do
     else Left <$> getError "failed to connect to account #{}, error code: {}"
 
 
+-- | Retrieve account information for the current session.
+--
+-- Sends the 'ACCOUNT_INFO' command and receives all account fields.
+-- Returns an 'AccountInfo' record with all details.
+--
+-- Corresponds to MetaTrader5.account_info().
 accountInfo :: IO AccountInfo
 accountInfo = do
   send "ACCOUNT_INFO"
@@ -100,13 +134,25 @@ accountInfo = do
     <*> (unpickle' "String" <$> receive)
     <*> (unpickle' "String" <$> receive)
 
-getError :: String -> IO String
+-- | Request the last error message from the Python server.
+--
+-- Sends the 'ERROR' command with a format string and receives the error message.
+--
+-- Corresponds to MetaTrader5.last_error().
+getError :: String             -- ^ Format string for the error request
+         -> IO String
 getError formatString = do
   send "ERROR"
   send formatString
   unpickle' "String" <$> receive
 
 
+-- | Retrieve all open positions for the current account.
+--
+-- Sends the 'POSITIONS_GET' command and receives a list of open positions.
+-- Returns a list of 'TradePosition' records.
+--
+-- Corresponds to MetaTrader5.positions_get().
 positionsGet :: IO [TradePosition]
 positionsGet = do
   send "POSITIONS_GET"
@@ -135,7 +181,9 @@ positionsGet = do
 
 -- | Get active orders with the ability to filter by symbol or ticket. You can specify the symbol or the ticket if you
 -- desire.
-ordersGet :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]
+ordersGet :: Maybe Symbol      -- ^ Optional symbol filter (e.g., Just "EURUSD")
+          -> Maybe Ticket      -- ^ Optional ticket filter (e.g., Just 12345)
+          -> IO [TradeOrder]
 ordersGet mInstr mTicket = do
   case (mInstr, mTicket) of
     (Just instr, Nothing) -> do
@@ -168,21 +216,36 @@ ordersGet mInstr mTicket = do
             <*> (unpickle' "String" <$> receive)
 
 
-symbolsGet :: String -> IO [SymbolInfo]
-symbolsGet group = do
-  send "SYMBOLS_GET"
-  send group
-  len <- unpickle' "Int" <$> receive
-  replicateM len readSymbolInfo
+-- | Retrieve all symbols in a group.
+--
+symbolsGet :: Maybe SymbolGroup       -- ^ Predefined or custom symbol group
+           -> IO [SymbolInfo]
+symbolsGet mGroup =
+  case mGroup of
+    Just group -> do
+      send "SYMBOLS_GET_GROUP"
+      send $ symbolGroupToString group
+      len <- unpickle' "Int" <$> receive
+      replicateM len readSymbolInfo
+    Nothing -> do
+      send "SYMBOLS_GET"
+      len <- unpickle' "Int" <$> receive
+      replicateM len readSymbolInfo
 
 
-symbolInfo :: String -> IO SymbolInfo
+-- | Retrieve information for a specific symbol.
+--
+symbolInfo :: Symbol            -- ^ Symbol name to query (e.g., "EURUSD")
+           -> IO SymbolInfo
 symbolInfo symbol = do
   send "SYMBOL_INFO"
   send symbol
   readSymbolInfo
 
-symbolSelect :: String -> IO Bool
+-- | Select a symbol in the MetaTrader 5 terminal.
+--
+symbolSelect :: Symbol          -- ^ Symbol name to select (e.g., "EURUSD")
+             -> IO Bool
 symbolSelect symbol = do
   send "SYMBOL_SELECT"
   send symbol
@@ -200,7 +263,20 @@ symbolSelect symbol = do
 --
 -- >>> currentPriceGET "INVALID_SYMBOL"
 -- Left "No tick data available for INVALID_SYMBOL"
-currentPriceGET :: String -> IO (Either String CurrentPrice)
+-- | Get current price information for a trading symbol.
+--
+-- Sends 'SYMBOL_INFO_TICK' command and reads bid, ask, last price, volume, and flags.
+-- Returns 'Right CurrentPrice' on success, or 'Left error' if symbol not found.
+--
+-- ==== __Examples__
+--
+-- >>> currentPriceGET "EURUSD"
+-- Right CurrentPrice{...}
+--
+-- >>> currentPriceGET "INVALID"
+-- Left "No tick data available for INVALID"
+currentPriceGET :: Symbol      -- ^ Trading symbol for price retrieval
+                -> IO (Either String CurrentPrice)
 currentPriceGET symbol = do
   -- Follow established command pattern (uppercase commands)
   send "SYMBOL_INFO_TICK"
@@ -216,7 +292,7 @@ currentPriceGET symbol = do
 
 -- | Parse current price by reading individual fields from Python server
 -- Following the established pattern of reading fields sequentially
-parseCurrentPriceFromFields :: String -> IO (Either String CurrentPrice)
+parseCurrentPriceFromFields :: Symbol -> IO (Either String CurrentPrice)
 parseCurrentPriceFromFields symbol = do
   bid        <- unpickle' "Double" <$> receive  -- bid price
   ask        <- unpickle' "Double" <$> receive  -- ask price
@@ -243,12 +319,30 @@ parseCurrentPriceFromFields symbol = do
     , cpVolumeReal = volReal
     }
 
-orderCheck :: MqlTradeRequest -> IO OrderSendResult
+-- | Check the validity of a trade request without sending it to the market.
+--
+-- Sends the 'ORDER_CHECK' command with the trade request and receives the result.
+-- Returns an 'OrderSendResult' with the check outcome.
+--
+-- Corresponds to MetaTrader5.order_check().
+-- | Check the validity of a trade request without executing it.
+--
+-- Sends the 'ORDER_CHECK' command with the trade request and receives the check result.
+-- Returns an 'OrderSendResult' detailing validity or errors.
+--
+-- Corresponds to MetaTrader5.order_check().
+orderCheck :: MqlTradeRequest  -- ^ Trade request parameters to validate
+           -> IO OrderSendResult
 orderCheck request = do
   send "ORDER_CHECK"
   sendMqlTradeRequest request
   readOrderSendResult
 
+-- | Send a trade request to the Python server (internal helper).
+--
+-- Used by 'orderCheck' and 'orderSend' to transmit all fields of 'MqlTradeRequest'.
+--
+-- Not exposed to users.
 sendMqlTradeRequest :: MqlTradeRequest -> IO ()
 sendMqlTradeRequest MqlTradeRequest {..} = do
   send $ show . fromEnum $ trReqAction
@@ -269,7 +363,20 @@ sendMqlTradeRequest MqlTradeRequest {..} = do
   send $ show trReqPosition
   send $ show trReqPositionBy
 
-orderSend :: MqlTradeRequest -> IO OrderSendResult
+-- | Send a trade request to the market.
+--
+-- Sends the 'ORDER_SEND' command with the trade request and receives the result.
+-- Returns an 'OrderSendResult' with the execution outcome.
+--
+-- Corresponds to MetaTrader5.order_send().
+-- | Send a trade request to the market.
+--
+-- Sends the 'ORDER_SEND' command with the trade request and receives execution result.
+-- Returns an 'OrderSendResult' with trade execution details.
+--
+-- Corresponds to MetaTrader5.order_send().
+orderSend :: MqlTradeRequest   -- ^ Trade request parameters to execute
+          -> IO OrderSendResult
 orderSend request = do
   send "ORDER_SEND"
   sendMqlTradeRequest request
@@ -280,9 +387,17 @@ orderSend request = do
 -- Sends a cancellation request for the specified order ticket.
 -- Only works for pending orders that haven't been executed yet.
 --
--- Returns 'TRADE_RETCODE_DONE' on successful cancellation.
-cancelOrderPOST :: Int                -- ^ Order ticket number to cancel
-                -> IO OrderSendResult -- ^ Result of the cancellation request
+-- Returns an 'OrderSendResult' with the cancellation outcome.
+--
+-- Corresponds to MetaTrader5.order_send() with TRADE_ACTION_REMOVE.
+-- | Cancel a pending order by ticket number.
+--
+-- Sends the 'ORDER_CANCEL' command with the specified ticket number.
+-- Returns an 'OrderSendResult' indicating cancellation outcome.
+--
+-- Corresponds to MetaTrader5.order_send() with TRADE_ACTION_REMOVE.
+cancelOrderPOST :: Int            -- ^ Order ticket number to cancel
+                -> IO OrderSendResult -- ^ Cancellation result
 cancelOrderPOST orderTicket = do
   send "ORDER_CANCEL"
   send (show orderTicket)

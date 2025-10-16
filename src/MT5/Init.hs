@@ -4,6 +4,7 @@
 module MT5.Init
     ( startMT5
     , stopMT5
+    , mt5Started
     , detectExecutionEnvironment
     , detectPythonEnvironments
     , selectBestPythonEnvironment
@@ -45,6 +46,10 @@ import           MT5.PyProc
 
 venvPython :: Config -> IO FilePath
 venvPython config = makeAbsolute (venvDir config ++ "/bin/python")
+
+mt5Started :: IORef Bool
+mt5Started = unsafePerformIO $ newIORef False
+{-# NOINLINE mt5Started #-}
 
 
 -- | Python process object, fetchable from within IO so we don't need to pass it to every function/hide it with Reader
@@ -375,6 +380,7 @@ startMT5 config = do
   createPythonProcess config'''
   -- threadDelay (1 * 10 ^ 6) -- give it some time to startup
   -- maybe (return ()) (print <=< loginAccount) (login config)
+  writeIORef mt5Started True
   return config'''
   where
     setupPythonEnvironment :: Config -> Bool -> IO Config

@@ -1,5 +1,5 @@
 name:                mt5haskell
-version:             0.1.0.0
+version:             0.1.0.1
 github:              "github.com/schnecki/mt5haskell"
 license:             BSD-3-Clause
 author:              "Manuel Schneckenreither"

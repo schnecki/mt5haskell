@@ -16,7 +16,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Control.Exception (try, ErrorCall(..))
 import Data.IORef
-import System.IO
+import System.IO    
 import qualified Data.Text as T
 import System.Process
 import MT5.PyProc

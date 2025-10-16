@@ -15,6 +15,7 @@ import           Data.FileEmbed         (embedFileRelative)
 import           Data.IORef
 import           Data.Maybe             (fromMaybe)
 import qualified Data.Text              as T
+import qualified Data.Text.Encoding     as Encoding
 import           Data.Word
 import           EasyLogger
 import           Language.Python.Pickle hiding (unpickle')
@@ -79,4 +80,9 @@ instance {-# OVERLAPS #-} FromValue String where
 
 
 pythonCode :: B.ByteString
-pythonCode = $(embedFileRelative "main.py")
+pythonCode = disableDebugging $ $(embedFileRelative "main.py")
+  where disableDebugging inp =
+          let (bef, after) = B.breakSubstring (str2Bs "DEBUG=True") inp
+          in bef `B.append` str2Bs "DEBUG=False" `B.append` after
+        str2Bs :: String -> B.ByteString
+        str2Bs = Encoding.encodeUtf8 . T.pack

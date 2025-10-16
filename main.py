@@ -21,12 +21,11 @@ mt5 = MetaTrader5(
 
 # connect to MetaTrader 5
 
-DEBUG=True
+DEBUG=False
 
 def send(x, info = ""):
     """Send object x and print info to console."""
     with os.fdopen(sys.stdout.fileno(), "ab", closefd = False) as stdout:
-        # if info != "":
         if DEBUG:
             sys.stderr.write("Info: " + str(info) + ". Value: '" + str(x) + "' [Class: " + x.__class__.__name__ + "]\n")
             sys.stderr.flush()
@@ -238,7 +237,6 @@ for line in sys.stdin:
         password = sys.stdin.readline().strip()
         # server = sys.stdin.readline().strip()
         # timeout = sys.stdin.readline().strip()
-        # sys.stderr.write("Account: " + str(account) + " pass: " + passw + "\n")
         send(log(mt5.login(login=account, password=password, server=server)))
         # send(mt5.login(account, password=passw))
     elif line == 'ACCOUNT_INFO':
@@ -318,6 +316,13 @@ for line in sys.stdin:
         sendOrders(orders)
 
     elif line == 'SYMBOLS_GET':
+        symbols = mt5.symbols_get()
+        send(len(symbols), "Length")
+        log(symbols)
+        for xs in symbols:
+            sendSymbol(xs)
+
+    elif line == 'SYMBOLS_GET_GROUP':
         group = sys.stdin.readline().strip()
         symbols = mt5.symbols_get(group)
         send(len(symbols), "Length")

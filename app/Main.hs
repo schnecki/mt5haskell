@@ -116,6 +116,8 @@ main = do
       putStrLn $ "Initialize result: " ++ show res
       putStrLn "Account Info:"
       accountInfo >>= print
+      putStrLn "Symbols:"
+      symbolsGet Nothing >>= print
 
       case res of
         Right () -> do

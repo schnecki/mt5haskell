@@ -5,7 +5,7 @@ cabal-version: 2.2
 -- see: https://github.com/sol/hpack
 
 name:           mt5haskell
-version:        0.1.0.0
+version:        0.1.0.1
 description:    Please see the README on GitHub at <https://github.com/githubuser/mt5haskell#readme>
 homepage:       https://github.com/github.com/schnecki#readme
 bug-reports:    https://github.com/github.com/schnecki/issues
