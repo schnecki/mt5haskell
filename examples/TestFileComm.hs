@@ -1,0 +1,145 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | Test program for file-based MT5 communication
+--
+-- This program demonstrates how to use the file-based communication
+-- channel to interact with MT5 via the MT5RestAPIBridge.mq5 EA.
+--
+-- Prerequisites:
+--   1. MT5 terminal must be running
+--   2. MT5RestAPIBridge.mq5 EA must be attached to a chart
+--   3. AutoTrading must be enabled
+--
+module Main where
+
+import           Control.Monad          (unless, when)
+import qualified Data.Aeson             as Aeson
+import qualified Data.ByteString.Lazy   as BSL
+import           Data.Maybe             (fromMaybe)
+import qualified Data.Text              as T
+import           System.Environment     (lookupEnv)
+import           System.Exit            (exitFailure)
+import           System.FilePath        ((</>))
+
+import           MT5.Communication.File
+import           MT5.Communication.Types
+
+
+main :: IO ()
+main = do
+  putStrLn "=== MT5 File Communication Test ==="
+  putStrLn ""
+  
+  -- Get file paths
+  baseDir <- getMT5FilesDirDefault
+  (reqPath, respPath) <- getMT5FilePaths baseDir
+  
+  putStrLn $ "Request file:  " ++ reqPath
+  putStrLn $ "Response file: " ++ respPath
+  putStrLn ""
+  
+  -- Initialize files
+  putStrLn "Initializing communication files..."
+  initializeFiles reqPath respPath
+  putStrLn "✓ Files initialized"
+  putStrLn ""
+  
+  -- Test 1: Account Info
+  putStrLn "=== Test 1: Account Info ==="
+  testAccountInfo reqPath respPath
+  putStrLn ""
+  
+  -- Test 2: Positions Get
+  putStrLn "=== Test 2: Get Open Positions ==="
+  testPositionsGet reqPath respPath
+  putStrLn ""
+  
+  -- Test 3: Symbol Info
+  putStrLn "=== Test 3: Symbol Info (EURUSD) ==="
+  testSymbolInfo reqPath respPath "EURUSD"
+  putStrLn ""
+  
+  putStrLn "=== All tests completed ==="
+
+
+-- | Test account_info endpoint
+testAccountInfo :: FilePath -> FilePath -> IO ()
+testAccountInfo reqPath respPath = do
+  let req = Request
+        { requestAction = "account_info"
+        , requestData = Aeson.object []
+        }
+  
+  -- Send request
+  sendRequest reqPath req
+  putStrLn "✓ Request sent"
+  
+  -- Receive response with 5 second timeout
+  mResp <- receiveResponse 5000 respPath
+  
+  case mResp of
+    Nothing -> do
+      putStrLn "✗ ERROR: Response timeout!"
+      exitFailure
+    Just resp -> do
+      putStrLn $ "✓ Response received: " ++ show (responseSuccess resp)
+      putStrLn $ "  Data: " ++ show (responseData resp)
+
+
+-- | Test positions_get endpoint
+testPositionsGet :: FilePath -> FilePath -> IO ()
+testPositionsGet reqPath respPath = do
+  let req = Request
+        { requestAction = "positions_get"
+        , requestData = Aeson.object []
+        }
+  
+  -- Send request
+  sendRequest reqPath req
+  putStrLn "✓ Request sent"
+  
+  -- Receive response
+  mResp <- receiveResponse 5000 respPath
+  
+  case mResp of
+    Nothing -> do
+      putStrLn "✗ ERROR: Response timeout!"
+      exitFailure
+    Just resp -> do
+      if responseSuccess resp
+        then do
+          putStrLn "✓ Response received successfully"
+          putStrLn $ "  Data: " ++ show (responseData resp)
+        else do
+          putStrLn "✗ ERROR: Request failed"
+          putStrLn $ "  Data: " ++ show (responseData resp)
+
+
+-- | Test symbol_info endpoint
+testSymbolInfo :: FilePath -> FilePath -> String -> IO ()
+testSymbolInfo reqPath respPath symbol = do
+  let req = Request
+        { requestAction = "symbol_info"
+        , requestData = Aeson.object [("symbol", Aeson.String (T.pack symbol))]
+        }
+  
+  -- Send request
+  sendRequest reqPath req
+  putStrLn $ "✓ Request sent for symbol: " ++ symbol
+  
+  -- Receive response
+  mResp <- receiveResponse 5000 respPath
+  
+  case mResp of
+    Nothing -> do
+      putStrLn "✗ ERROR: Response timeout!"
+      exitFailure
+    Just resp -> do
+      if responseSuccess resp
+        then do
+          putStrLn "✓ Symbol info received"
+          putStrLn $ "  Data: " ++ show (responseData resp)
+        else do
+          putStrLn "✗ ERROR: Failed to get symbol info"
+          putStrLn $ "  Data: " ++ show (responseData resp)
+
