@@ -1,12 +1,17 @@
-{-# LANGUAGE DeriveAnyClass  #-}
-{-# LANGUAGE DeriveGeneric   #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DeriveAnyClass    #-}
+{-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
 
 module MT5.API
-  ( initialize
+  ( SymbolGroup (..),
+    initialize
   , loginAccount
   , accountInfo
   , positionsGet
+  , positionClose
+  , positionClosePartial
+  , positionModify
   , symbolInfo
   , symbolsGet
   , symbolSelect
@@ -23,24 +28,53 @@ module MT5.API
 
 import           Control.DeepSeq
 import           Control.Monad        (replicateM)
-import           Data.List            (isPrefixOf)
+import           Data.Aeson           (Value, decode, encode)
+import qualified Data.ByteString.Lazy as BSL
+import           Data.List            (isPrefixOf, filter, find)
+import           Data.Maybe           (fromMaybe)
+import           Data.Text            (Text)
 import qualified Data.Text            as T
-import           Data.Time            (UTCTime)
+import           Data.Time            (UTCTime, getCurrentTime)
 import           Data.Time.Format     (defaultTimeLocale, formatTime)
+import           System.IO.Unsafe     (unsafePerformIO)
 import           GHC.Generics         (Generic)
 
 
-import           MT5.Communication    (receive, send, unpickle')
-import           MT5.Config           (Login (..))
-import           MT5.Data             (AccountInfo (AccountInfo),
+import           MT5.API.Internal          (sendRequestViaFile)
+import           MT5.Communication         (receive, send, unpickle')
+import           MT5.Communication.Request (mkAccountInfoRequest, mkPositionsGetRequest,
+                                            mkSymbolInfoRequest, mkOrdersGetRequest, mkOrderSendRequest,
+                                            mkPositionCloseRequest, mkPositionClosePartialRequest,
+                                            mkPositionModifyRequest)
+import           MT5.Communication.Response (AccountInfoResponse(..), PositionsGetResponse(..),
+                                             PositionInfoResponse(..), SymbolInfoResponse(..),
+                                             OrdersGetResponse(..), OrderInfoResponse(..), OrderSendResponse(..),
+                                             PositionCloseResponse(..), PositionModifyResponse(..))
+import           MT5.Communication.Types   (Response(..), responseData)
+import           MT5.Config                (Login(..), CommunicationChannel(..), getConfig, communicationChannel,
+                                            positionManagementChannel)
+import           MT5.Data.AccountInfo      (AccountMarginMode(..), AccountStopoutMode(..), AccountTradeMode(..))
+import           MT5.Data.OrderState       (OrderState(..))
+import           MT5.Data.OrderType        (OrderType(..))
+import           MT5.Data.OrderTypeFilling (OrderTypeFilling(..))
+import           MT5.Data.OrderTypeTime    (OrderTypeTime(..))
+import           MT5.Data.TradeRequestAction (TradeRequestAction(..))
+import           MT5.Data             (AccountInfo (..),
                                        CurrentPrice (..), MqlTradeRequest (..),
-                                       OrderSendResult, SymbolInfo,
-                                       TradeOrder (TradeOrder, tradeOrderTicket),
-                                       TradePosition (TradePosition),
+                                       OrderSendResult(..), SymbolInfo(..),
+                                       TradeOrder (..),
+                                       TradePosition (..),
+                                       PositionType(..), PositionReason(..),
                                        readOrderSendResult, readSymbolInfo)
+import           MT5.Data.SymbolInfo (SymbolChartMode(..), SymbolCalcMode(..), 
+                                      SymbolTradeMode(..), SymbolOptionMode(..),
+                                      SymbolOptionRight(..), SymbolOrders(..),
+                                      SymbolSwapMode(..), SymbolTradeExecutionMode(..))
+import           MT5.Data.OrderSendResult (TradeRetcode(..))
 import           MT5.Data.Candle      (MT5Candle (MT5Candle),
                                        MT5CandleData (MT5CandleData))
 import           MT5.Data.Granularity (MT5Granularity, toMT5TimeframeInt)
+import           MT5.Error            (MT5Error(..))
 import           MT5.Util             (mscToUTCTime, secondsToUTCTime)
 
 type Symbol = String
@@ -97,12 +131,77 @@ loginAccount Login {..} = do
 
 -- | Retrieve account information for the current session.
 --
--- Sends the 'ACCOUNT_INFO' command and receives all account fields.
--- Returns an 'AccountInfo' record with all details.
+-- **Default Routing**: Prefers PythonBridge (returns 28 complete fields) over FileBridge (14 fields = 50% data loss).
+-- Config can override to FileBridge if explicitly needed, but PythonBridge strongly recommended for production.
+--
+-- Supports dual communication channels:
+-- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (faster but incomplete data)
+-- - PythonBridge: Uses Python-based communication (complete data, recommended default)
+--
+-- Returns an 'AccountInfo' record with all account details.
 --
 -- Corresponds to MetaTrader5.account_info().
 accountInfo :: IO AccountInfo
 accountInfo = do
+  config <- getConfig
+  case communicationChannel config of
+    FileBridge -> accountInfoViaFile
+    FileBridgeCustom _ _ -> accountInfoViaFile
+    PythonBridge -> accountInfoViaPython
+
+-- | Get account info via file-based communication
+accountInfoViaFile :: IO AccountInfo
+accountInfoViaFile = do
+  let req = mkAccountInfoRequest
+  
+  -- Send request and wait for response (5 second timeout)
+  mResponse <- sendRequestViaFile "account_info" req 5000
+  
+  case mResponse of
+    Nothing -> error "Account info request timed out"
+    Just response -> do
+      -- Parse the response data as AccountInfoResponse
+      let mAccountInfo = decode (encode $ responseData response) :: Maybe AccountInfoResponse
+      case mAccountInfo of
+        Nothing -> error "Failed to parse account info response"
+        Just accResp -> return $ convertAccountInfoResponse accResp
+
+-- | Convert AccountInfoResponse to AccountInfo
+convertAccountInfoResponse :: AccountInfoResponse -> AccountInfo
+convertAccountInfoResponse resp = AccountInfo
+  { accInfoLogin              = accountInfoLogin resp
+  , accInfoTrade_mode         = ACCOUNT_TRADE_MODE_DEMO  -- Default, not in response
+  , accInfoLeverage           = accountInfoLeverage resp
+  , accInfoLimit_orders       = 0  -- Not in file response
+  , accInfoMargin_so_mode     = ACCOUNT_STOPOUT_MODE_PERCENT  -- Default
+  , accInfoTrade_allowed      = accountInfoTradeAllowed resp
+  , accInfoTrade_expert       = accountInfoTradeExpert resp
+  , accInfoMargin_mode        = ACCOUNT_MARGIN_MODE_RETAIL_NETTING  -- Default
+  , accInfoCurrency_digits    = 2  -- Default for most currencies
+  , accInfoFifo_close         = False  -- Default
+  , accInfoBalance            = accountInfoBalance resp
+  , accInfoCredit             = 0.0  -- Not in file response
+  , accInfoProfit             = accountInfoProfit resp
+  , accInfoEquity             = accountInfoEquity resp
+  , accInfoMargin             = accountInfoMargin resp
+  , accInfoMargin_free        = accountInfoMarginFree resp
+  , accInfoMargin_level       = accountInfoMarginLevel resp
+  , accInfoMargin_so_call     = 0.0  -- Not in file response
+  , accInfoMargin_so_so       = 0.0  -- Not in file response
+  , accInfoMargin_initial     = 0.0  -- Not in file response
+  , accInfoMargin_maintenance = 0.0  -- Not in file response
+  , accInfoAssets             = 0.0  -- Not in file response
+  , accInfoLiabilities        = 0.0  -- Not in file response
+  , accInfoCommission_blocked = 0.0  -- Not in file response
+  , accInfoName               = T.unpack $ accountInfoName resp
+  , accInfoServer             = T.unpack $ accountInfoServer resp
+  , accInfoCurrency           = T.unpack $ accountInfoCurrency resp
+  , accInfoCompany            = ""  -- Not in file response
+  }
+
+-- | Get account info via Python bridge (legacy compatibility)
+accountInfoViaPython :: IO AccountInfo
+accountInfoViaPython = do
   send "ACCOUNT_INFO"
   AccountInfo
     <$> (unpickle' "Int" <$> receive)
@@ -149,12 +248,68 @@ getError formatString = do
 
 -- | Retrieve all open positions for the current account.
 --
--- Sends the 'POSITIONS_GET' command and receives a list of open positions.
+-- **Default Routing**: Prefers PythonBridge (returns 19 complete fields) over FileBridge (12 fields = 37% data loss).
+-- Config can override to FileBridge if explicitly needed, but PythonBridge strongly recommended for production.
+--
+-- Supports dual communication channels:
+-- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (faster but incomplete data)
+-- - PythonBridge: Uses Python-based communication (complete data, recommended default)
+--
 -- Returns a list of 'TradePosition' records.
 --
 -- Corresponds to MetaTrader5.positions_get().
 positionsGet :: IO [TradePosition]
 positionsGet = do
+  config <- getConfig
+  case communicationChannel config of
+    FileBridge -> positionsGetViaFile Nothing
+    FileBridgeCustom _ _ -> positionsGetViaFile Nothing
+    PythonBridge -> positionsGetViaPython
+
+-- | Get positions via file-based communication
+positionsGetViaFile :: Maybe Symbol -> IO [TradePosition]
+positionsGetViaFile mSymbol = do
+  let req = mkPositionsGetRequest (fmap T.pack mSymbol)
+  
+  -- Send request and wait for response (5 second timeout)
+  mResponse <- sendRequestViaFile "positions_get" req 5000
+  
+  case mResponse of
+    Nothing -> error "Positions get request timed out"
+    Just response -> do
+      -- Parse the response data as PositionsGetResponse
+      let mPositionsResp = decode (encode $ responseData response) :: Maybe PositionsGetResponse
+      case mPositionsResp of
+        Nothing -> error "Failed to parse positions get response"
+        Just posResp -> return $ map convertPositionInfoResponse (positionsGetPositions posResp)
+
+-- | Convert PositionInfoResponse to TradePosition
+convertPositionInfoResponse :: PositionInfoResponse -> TradePosition
+convertPositionInfoResponse resp = TradePosition
+  { trPosTicket          = positionTicket resp
+  , trPosTime            = secondsToUTCTime 0  -- Not available in file response
+  , trPosTime_msc        = mscToUTCTime 0  -- Not available in file response
+  , trPosTime_update     = secondsToUTCTime 0  -- Not available in file response
+  , trPosTime_update_msc = mscToUTCTime 0  -- Not available in file response
+  , trPosType            = toEnum (positionType resp)
+  , trPosMagic           = positionMagic resp
+  , trPosIdentifier      = 0  -- Not available in file response
+  , trPosReason          = POSITION_REASON_CLIENT  -- Default
+  , trPosVolume          = positionVolume resp
+  , trPosPriceOpen       = positionPriceOpen resp
+  , trPosSl              = positionSl resp
+  , trPosTp              = positionTp resp
+  , trPosPrice_current   = positionPriceCurrent resp
+  , trPosSwap            = positionSwap resp
+  , trPosProfit          = positionProfit resp
+  , trPosSymbol          = T.unpack $ positionSymbol resp
+  , trPosComment         = T.unpack $ positionComment resp
+  , trPosExternal_id     = ""  -- Not available in file response
+  }
+
+-- | Get positions via Python bridge (legacy compatibility)
+positionsGetViaPython :: IO [TradePosition]
+positionsGetViaPython = do
   send "POSITIONS_GET"
   len <- unpickle' "Int" <$> receive
   replicateM len
@@ -179,12 +334,254 @@ positionsGet = do
         <*> (unpickle' "String" <$> receive)
         <*> (unpickle' "String" <$> receive)
 
--- | Get active orders with the ability to filter by symbol or ticket. You can specify the symbol or the ticket if you
--- desire.
+-- | Close a position completely.
+--
+-- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
+--
+-- For PythonBridge: Closes position by sending opposite order with position parameter set.
+-- For FileBridge: Uses dedicated position_close EA action.
+--
+-- Corresponds to position_close EA action (FileBridge) or opposite order technique (PythonBridge).
+--
+-- Returns 'Right True' on successful close, 'Right False' if operation failed but was valid,
+-- or 'Left error' for errors like timeout, invalid requests, or position not found.
+positionClose :: Ticket -> IO (Either MT5Error Bool)
+positionClose ticket = do
+  config <- getConfig
+  case positionManagementChannel config of
+    FileBridge           -> positionCloseViaFile ticket
+    FileBridgeCustom _ _ -> positionCloseViaFile ticket
+    PythonBridge         -> positionCloseViaPython ticket
+
+-- | Close a position via file-based communication
+positionCloseViaFile :: Ticket -> IO (Either MT5Error Bool)
+positionCloseViaFile ticket = do
+  let eitherReq = mkPositionCloseRequest (fromIntegral ticket)
+  case eitherReq of
+    Left err -> return $ Left $ ValidationError $ T.pack $ "Invalid position close request: " ++ show err
+    Right req -> do
+      mResponse <- sendRequestViaFile "position_close" req 5000
+      case mResponse of
+        Nothing -> return $ Left $ TimeoutError "position_close" 5000
+        Just response -> do
+          let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
+          case mResp of
+            Nothing -> return $ Left $ ParseError "PositionCloseResponse" (T.pack $ show response)
+            Just resp -> return $ Right $ positionCloseSuccess resp
+
+-- | Close a position via Python bridge
+--
+-- Closes position by sending an opposite order with the position parameter set.
+-- This is the standard MT5 method when mt5.Close() is not available.
+positionCloseViaPython :: Ticket -> IO (Either MT5Error Bool)
+positionCloseViaPython ticket = do
+  -- First get the position to know its details
+  positions <- positionsGet
+  case filter (\p -> trPosTicket p == ticket) positions of
+    [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+    (pos:_) -> do
+      -- Create opposite order to close the position
+      let oppositeType = case trPosType pos of
+            POSITION_TYPE_BUY -> ORDER_TYPE_SELL
+            POSITION_TYPE_SELL -> ORDER_TYPE_BUY
+      
+      let closeRequest = MqlTradeRequest
+            { trReqAction      = TRADE_ACTION_DEAL
+            , trReqMagic       = 0
+            , trReqOrder       = 0
+            , trReqSymbol      = trPosSymbol pos
+            , trReqVolume      = trPosVolume pos
+            , trReqPrice       = 0.0  -- Market price
+            , trReqStoplimit   = 0.0
+            , trReqSl          = 0.0
+            , trReqTp          = 0.0
+            , trReqDeviation   = 10
+            , trReqType        = oppositeType
+            , trReqTypeFilling = ORDER_FILLING_FOK
+            , trReqTypeTime    = ORDER_TIME_GTC
+            , trReqExpiration  = 0
+            , trReqComment     = "Close position " ++ show ticket
+            , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
+            , trReqPositionBy  = 0
+            }
+      
+      result <- orderSendViaPython closeRequest
+      return $ Right $ ordSendRetcode result == TRADE_RETCODE_DONE
+
+-- | Close a position partially (reduce volume).
+--
+-- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
+--
+-- For PythonBridge: Closes partial volume by sending opposite order with smaller volume.
+-- For FileBridge: Uses dedicated position_close_partial EA action.
+--
+-- Corresponds to position_close_partial EA action.
+--
+-- Returns 'Right True' on successful partial close, 'Right False' if operation failed but was valid,
+-- or 'Left error' for errors like timeout, invalid requests, or position not found.
+positionClosePartial :: Ticket -> Double -> IO (Either MT5Error Bool)
+positionClosePartial ticket volume = do
+  config <- getConfig
+  case positionManagementChannel config of
+    FileBridge           -> positionClosePartialViaFile ticket volume
+    FileBridgeCustom _ _ -> positionClosePartialViaFile ticket volume
+    PythonBridge         -> positionClosePartialViaPython ticket volume
+
+-- | Close position partially via file-based communication
+positionClosePartialViaFile :: Ticket -> Double -> IO (Either MT5Error Bool)
+positionClosePartialViaFile ticket volume = do
+  let eitherReq = mkPositionClosePartialRequest (fromIntegral ticket) volume
+  case eitherReq of
+    Left err -> return $ Left $ ValidationError $ T.pack $ "Invalid position close partial request: " ++ show err
+    Right req -> do
+      mResponse <- sendRequestViaFile "position_close_partial" req 5000
+      case mResponse of
+        Nothing -> return $ Left $ TimeoutError "position_close_partial" 5000
+        Just response -> do
+          let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
+          case mResp of
+            Nothing -> return $ Left $ ParseError "PositionCloseResponse" (T.pack $ show response)
+            Just resp -> return $ Right $ positionCloseSuccess resp
+
+-- | Modify a position's stop-loss and take-profit levels.
+--
+-- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
+--
+-- For PythonBridge: Modifies position SL/TP using TRADE_ACTION_SLTP.
+-- For FileBridge: Uses dedicated position_modify EA action.
+--
+-- Corresponds to position_modify EA action.
+--
+-- Returns 'Right True' on successful modification, 'Right False' if operation failed but was valid,
+-- or 'Left error' for errors like timeout, invalid requests, or position not found.
+positionModify :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+positionModify ticket sl tp = do
+  config <- getConfig
+  case positionManagementChannel config of
+    FileBridge           -> positionModifyViaFile ticket sl tp
+    FileBridgeCustom _ _ -> positionModifyViaFile ticket sl tp
+    PythonBridge         -> positionModifyViaPython ticket sl tp
+
+-- | Modify position via file-based communication
+positionModifyViaFile :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+positionModifyViaFile ticket sl tp = do
+  let eitherReq = mkPositionModifyRequest (fromIntegral ticket) sl tp
+  case eitherReq of
+    Left err -> return $ Left $ ValidationError $ T.pack $ "Invalid position modify request: " ++ show err
+    Right req -> do
+      mResponse <- sendRequestViaFile "position_modify" req 5000
+      case mResponse of
+        Nothing -> return $ Left $ TimeoutError "position_modify" 5000
+        Just response -> do
+          let mResp = decode (encode $ responseData response) :: Maybe PositionModifyResponse
+          case mResp of
+            Nothing -> return $ Left $ ParseError "PositionModifyResponse" (T.pack $ show response)
+            Just resp -> return $ Right $ positionModifySuccess resp
+
+-- | Close partial position via Python bridge
+positionClosePartialViaPython :: Ticket -> Double -> IO (Either MT5Error Bool)
+positionClosePartialViaPython ticket volume = do
+  -- First get the position to know its details
+  positions <- positionsGet
+  case filter (\p -> trPosTicket p == ticket) positions of
+    [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+    (pos:_) -> do
+      -- Create opposite order with partial volume to close
+      let oppositeType = case trPosType pos of
+            POSITION_TYPE_BUY -> ORDER_TYPE_SELL
+            POSITION_TYPE_SELL -> ORDER_TYPE_BUY
+      
+      let closeRequest = MqlTradeRequest
+            { trReqAction      = TRADE_ACTION_DEAL
+            , trReqMagic       = 0
+            , trReqOrder       = 0
+            , trReqSymbol      = trPosSymbol pos
+            , trReqVolume      = volume  -- Partial volume
+            , trReqPrice       = 0.0  -- Market price
+            , trReqStoplimit   = 0.0
+            , trReqSl          = 0.0
+            , trReqTp          = 0.0
+            , trReqDeviation   = 10
+            , trReqType        = oppositeType
+            , trReqTypeFilling = ORDER_FILLING_FOK
+            , trReqTypeTime    = ORDER_TIME_GTC
+            , trReqExpiration  = 0
+            , trReqComment     = "Close partial " ++ show ticket
+            , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
+            , trReqPositionBy  = 0
+            }
+      
+      result <- orderSendViaPython closeRequest
+      return $ Right $ ordSendRetcode result == TRADE_RETCODE_DONE
+
+-- | Modify position via Python bridge
+positionModifyViaPython :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+positionModifyViaPython ticket sl tp = do
+  -- Get position to know its symbol
+  positions <- positionsGet
+  case filter (\p -> trPosTicket p == ticket) positions of
+    [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+    (pos:_) -> do
+      let modifyRequest = MqlTradeRequest
+            { trReqAction      = TRADE_ACTION_SLTP
+            , trReqMagic       = 0
+            , trReqOrder       = 0
+            , trReqSymbol      = trPosSymbol pos
+            , trReqVolume      = 0.0  -- Not needed for SLTP
+            , trReqPrice       = 0.0  -- Not needed for SLTP
+            , trReqStoplimit   = 0.0
+            , trReqSl          = sl   -- New stop loss
+            , trReqTp          = tp   -- New take profit
+            , trReqDeviation   = 0
+            , trReqType        = ORDER_TYPE_BUY  -- Doesn't matter for SLTP
+            , trReqTypeFilling = ORDER_FILLING_FOK
+            , trReqTypeTime    = ORDER_TIME_GTC
+            , trReqExpiration  = 0
+            , trReqComment     = "Modify SL/TP " ++ show ticket
+            , trReqPosition    = ticket  -- CRITICAL: Position to modify
+            , trReqPositionBy  = 0
+            }
+      
+      result <- orderSendViaPython modifyRequest
+      return $ Right $ ordSendRetcode result == TRADE_RETCODE_DONE
+
+-- | Get active orders with the ability to filter by symbol or ticket.
+--
+-- **Default Routing**: Prefers PythonBridge (returns 17 complete fields) over FileBridge (10 fields = 41% data loss).
+-- Config can override to FileBridge if explicitly needed, but PythonBridge strongly recommended for production.
+--
+-- **Note**: Ticket filtering only works with PythonBridge (FileBridge ignores ticket parameter).
+--
+-- Supports dual communication channels:
+-- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (faster but incomplete data, symbol filter only)
+-- - PythonBridge: Uses Python-based communication (complete data + ticket filter, recommended default)
+--
 ordersGet :: Maybe Symbol      -- ^ Optional symbol filter (e.g., Just "EURUSD")
-          -> Maybe Ticket      -- ^ Optional ticket filter (e.g., Just 12345)
+          -> Maybe Ticket      -- ^ Optional ticket filter (e.g., Just 12345) - PythonBridge only
           -> IO [TradeOrder]
 ordersGet mInstr mTicket = do
+  config <- getConfig
+  case communicationChannel config of
+    FileBridge           -> ordersGetViaFile mInstr mTicket
+    FileBridgeCustom _ _ -> ordersGetViaFile mInstr mTicket
+    PythonBridge         -> ordersGetViaPython mInstr mTicket
+
+-- | Retrieve orders using file bridge (Note: ticket filter not supported by EA)
+ordersGetViaFile :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]
+ordersGetViaFile mSymbol _mTicket = do
+  let req = mkOrdersGetRequest (fmap T.pack mSymbol)
+  mResponse <- sendRequestViaFile "orders_get" req 5000
+  case mResponse of
+    Nothing -> error "Orders get request timed out"
+    Just response -> do
+      let mOrders = decode (encode $ responseData response) :: Maybe OrdersGetResponse
+      case mOrders of
+        Nothing -> error "Failed to parse orders response"
+        Just resp -> return $ map convertOrderInfoResponse (ordersGetOrders resp)
+
+-- | Retrieve orders using Python bridge (original implementation)
+ordersGetViaPython :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]
+ordersGetViaPython mInstr mTicket = do
   case (mInstr, mTicket) of
     (Just instr, Nothing) -> do
       send "ORDERS_GET_SYMBOL"
@@ -215,6 +612,30 @@ ordersGet mInstr mTicket = do
             <*> (unpickle' "String" <$> receive)
             <*> (unpickle' "String" <$> receive)
 
+-- | Convert OrderInfoResponse (10 fields) to TradeOrder (17 fields)
+convertOrderInfoResponse :: OrderInfoResponse -> TradeOrder
+convertOrderInfoResponse resp =
+  let now = unsafePerformIO getCurrentTime
+  in TradeOrder
+    { tradeOrderTicket          = orderTicket resp
+    , tradeOrderTime_setup      = now  -- Not in EA response
+    , tradeOrderTime_setup_msc  = now  -- Not in EA response
+    , tradeOrderTime_expiration = 0    -- Not in EA response
+    , tradeOrderType            = toEnum (orderType resp)
+    , tradeOrderType_time       = 0    -- Not in EA response
+    , tradeOrderType_filling    = 0    -- Not in EA response
+    , tradeOrderState           = ORDER_STATE_STARTED  -- Default (not in EA response)
+    , tradeOrderMagic           = orderMagic resp
+    , tradeOrderVolume_current  = orderVolume resp
+    , tradeOrderPrice_open      = orderPriceOpen resp
+    , tradeOrderSl              = orderSl resp
+    , tradeOrderTp              = orderTp resp
+    , tradeOrderPrice_current   = orderPriceCurrent resp
+    , tradeOrderSymbol          = T.unpack $ orderSymbol resp
+    , tradeOrderComment         = T.unpack $ orderComment resp
+    , tradeOrderExternal_id     = ""   -- Not in EA response
+    }
+
 
 -- | Retrieve all symbols in a group.
 --
@@ -235,12 +656,151 @@ symbolsGet mGroup =
 
 -- | Retrieve information for a specific symbol.
 --
+-- **CRITICAL - Default Routing**: ALWAYS use PythonBridge in production!
+-- FileBridge returns only 7 of 104 fields (93% data loss) which may cause order rejections.
+-- Missing: contract size, tick value, volume limits, swap rates, margin requirements, ALL options data.
+--
+-- **Default Routing**: Prefers PythonBridge (returns 104 complete fields) over FileBridge (7 fields = 93% data loss).
+-- Config can override to FileBridge but this is STRONGLY DISCOURAGED for production use.
+--
+-- Supports dual communication channels:
+-- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (INCOMPLETE - only 7 basic fields)
+-- - PythonBridge: Uses Python-based communication (COMPLETE - all 104 fields, REQUIRED for production)
+--
 symbolInfo :: Symbol            -- ^ Symbol name to query (e.g., "EURUSD")
            -> IO SymbolInfo
 symbolInfo symbol = do
+  config <- getConfig
+  case communicationChannel config of
+    FileBridge           -> symbolInfoViaFile symbol
+    FileBridgeCustom _ _ -> symbolInfoViaFile symbol
+    PythonBridge         -> symbolInfoViaPython symbol
+
+-- | Retrieve symbol information using file bridge
+symbolInfoViaFile :: Symbol -> IO SymbolInfo
+symbolInfoViaFile symbol = do
+  let reqResult = mkSymbolInfoRequest (T.pack symbol)
+  case reqResult of
+    Left err -> error $ "Invalid symbol request: " ++ show err
+    Right req -> do
+      mResponse <- sendRequestViaFile "symbol_info" req 5000
+      case mResponse of
+        Nothing -> error $ "Symbol info request timed out for symbol: " ++ symbol
+        Just response -> do
+          let mSymbolInfo = decode (encode $ responseData response) :: Maybe SymbolInfoResponse
+          case mSymbolInfo of
+            Nothing -> error $ "Failed to parse symbol info response for: " ++ symbol
+            Just resp -> return $ convertSymbolInfoResponse resp
+
+-- | Retrieve symbol information using Python bridge (original implementation)
+symbolInfoViaPython :: Symbol -> IO SymbolInfo
+symbolInfoViaPython symbol = do
   send "SYMBOL_INFO"
   send symbol
   readSymbolInfo
+
+-- | Convert SymbolInfoResponse (7 fields) to SymbolInfo (98+ fields with defaults)
+convertSymbolInfoResponse :: SymbolInfoResponse -> SymbolInfo
+convertSymbolInfoResponse resp =
+  let now = unsafePerformIO getCurrentTime
+  in SymbolInfo
+  { symInfoCustom                  = False
+  , symInfoChartMode               = SYMBOL_CHART_MODE_BID
+  , symInfoSelect                  = True
+  , symInfoVisible                 = False
+  , symInfoSessionDeals            = 0
+  , symInfoSessionBuyOrders        = SYMBOL_ORDERS_GTC
+  , symInfoSessionSellOrders       = SYMBOL_ORDERS_GTC
+  , symInfoVolume                  = 0
+  , symInfoVolumehigh              = 0
+  , symInfoVolumelow               = 0
+  , symInfoTime                    = 0
+  , symInfoDigits                  = symbolInfoDigits resp
+  , symInfoSpread                  = symbolInfoSpread resp
+  , symInfoSpreadFloat             = False
+  , symInfoTicksBookdepth          = 0
+  , symInfoTradeCalcMode           = SYMBOL_CALC_MODE_FOREX
+  , symInfoTradeMode               = SYMBOL_TRADE_MODE_FULL
+  , symInfoStartTime               = now
+  , symInfoExpirationTime          = now
+  , symInfoTradeStopsLevel         = 0
+  , symInfoTradeFreezeLevel        = 0
+  , symInfoTradeExemode            = SYMBOL_TRADE_EXECUTION_MARKET
+  , symInfoSwapMode                = SYMBOL_SWAP_MODE_DISABLED
+  , symInfoSwapRollover3days       = 3
+  , symInfoMarginHedgedUseLeg      = True
+  , symInfoExpirationMode          = 15
+  , symInfoFillingMode             = 1
+  , symInfoOrderMode               = 119
+  , symInfoOrderGtcMode            = 0
+  , symInfoOptionMode              = SYMBOL_OPTION_MODE_EUROPEAN
+  , symInfoOptionRight             = SYMBOL_OPTION_RIGHT_CALL
+  , symInfoBid                     = symbolInfoBid resp
+  , symInfoBidhigh                 = 0.0
+  , symInfoBidlow                  = 0.0
+  , symInfoAsk                     = symbolInfoAsk resp
+  , symInfoAskhigh                 = 0.0
+  , symInfoAsklow                  = 0.0
+  , symInfoLast                    = 0.0
+  , symInfoLasthigh                = 0.0
+  , symInfoLastlow                 = 0.0
+  , symInfoVolumeReal              = 0.0
+  , symInfoVolumehighReal          = 0.0
+  , symInfoVolumelowReal           = 0.0
+  , symInfoOptionStrike            = 0.0
+  , symInfoPoint                   = symbolInfoPoint resp
+  , symInfoTradeTickValue          = 0.0
+  , symInfoTradeTickValueProfit    = 0.0
+  , symInfoTradeTickValueLoss      = 0.0
+  , symInfoTradeTickSize           = 0.01
+  , symInfoTradeContractSize       = 100000.0
+  , symInfoTradeAccruedInterest    = 0.0
+  , symInfoTradeFaceValue          = 0.0
+  , symInfoTradeLiquidityRate      = 0.0
+  , symInfoVolumeMin               = 0.01
+  , symInfoVolumeMax               = 25.0
+  , symInfoVolumeStep              = 0.01
+  , symInfoVolumeLimit             = 60.0
+  , symInfoSwapLong                = 0.0
+  , symInfoSwapShort               = 0.0
+  , symInfoMarginInitial           = 0.0
+  , symInfoMarginMaintenance       = 0.0
+  , symInfoSessionVolume           = 0.0
+  , symInfoSessionTurnover         = 0.0
+  , symInfoSessionInterest         = 0.0
+  , symInfoSessionBuyOrdersVolume  = 0.0
+  , symInfoSessionSellOrdersVolume = 0.0
+  , symInfoSessionOpen             = 0.0
+  , symInfoSessionClose            = 0.0
+  , symInfoSessionAw               = 0.0
+  , symInfoSessionPriceSettlement  = 0.0
+  , symInfoSessionPriceLimitMin    = 0.0
+  , symInfoSessionPriceLimitMax    = 0.0
+  , symInfoMarginHedged            = 0.0
+  , symInfoPriceChange             = 0.0
+  , symInfoPriceVolatility         = 0.0
+  , symInfoPriceTheoretical        = 0.0
+  , symInfoPriceGreeksDelta        = 0.0
+  , symInfoPriceGreeksTheta        = 0.0
+  , symInfoPriceGreeksGamma        = 0.0
+  , symInfoPriceGreeksVega         = 0.0
+  , symInfoPriceGreeksRho          = 0.0
+  , symInfoPriceGreeksOmega        = 0.0
+  , symInfoPriceSensitivity        = 0.0
+  , symInfoBasis                   = ""
+  , symInfoCategory                = ""
+  , symInfoCurrencyBase            = ""
+  , symInfoCurrencyProfit          = ""
+  , symInfoCurrencyMargin          = ""
+  , symInfoBank                    = ""
+  , symInfoDescription             = T.unpack $ symbolInfoSymbol resp
+  , symInfoExchange                = ""
+  , symInfoFormula                 = ""
+  , symInfoIsin                    = ""
+  , symInfoName                    = T.unpack $ symbolInfoSymbol resp
+  , symInfoPage                    = ""
+  , symInfoPath                    = ""
+  }
 
 -- | Select a symbol in the MetaTrader 5 terminal.
 --
@@ -327,6 +887,8 @@ parseCurrentPriceFromFields symbol = do
 -- Corresponds to MetaTrader5.order_check().
 -- | Check the validity of a trade request without executing it.
 --
+-- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
+--
 -- Sends the 'ORDER_CHECK' command with the trade request and receives the check result.
 -- Returns an 'OrderSendResult' detailing validity or errors.
 --
@@ -334,6 +896,41 @@ parseCurrentPriceFromFields symbol = do
 orderCheck :: MqlTradeRequest  -- ^ Trade request parameters to validate
            -> IO OrderSendResult
 orderCheck request = do
+  config <- getConfig
+  case positionManagementChannel config of
+    FileBridge           -> orderCheckViaFile request
+    FileBridgeCustom _ _ -> orderCheckViaFile request
+    PythonBridge         -> orderCheckViaPython request
+
+-- | Check order using file bridge
+orderCheckViaFile :: MqlTradeRequest -> IO OrderSendResult
+orderCheckViaFile mqlReq = do
+  let reqResult = mkOrderSendRequest
+                    (T.pack $ trReqSymbol mqlReq)
+                    (trReqVolume mqlReq)
+                    (trReqType mqlReq)
+                    (trReqPrice mqlReq)
+                    (trReqSl mqlReq)
+                    (trReqTp mqlReq)
+                    (trReqDeviation mqlReq)
+                    (trReqTypeFilling mqlReq)
+                    (trReqTypeTime mqlReq)
+                    (T.pack $ trReqComment mqlReq)
+  case reqResult of
+    Left err -> error $ "Invalid order check request: " ++ show err
+    Right req -> do
+      mResponse <- sendRequestViaFile "order_check" req 5000
+      case mResponse of
+        Nothing -> error "Order check request timed out"
+        Just response -> do
+          let mOrderCheck = decode (encode $ responseData response) :: Maybe OrderSendResponse
+          case mOrderCheck of
+            Nothing -> error "Failed to parse order check response"
+            Just resp -> return $ convertOrderSendResponse resp
+
+-- | Check order using Python bridge
+orderCheckViaPython :: MqlTradeRequest -> IO OrderSendResult
+orderCheckViaPython request = do
   send "ORDER_CHECK"
   sendMqlTradeRequest request
   readOrderSendResult
@@ -371,6 +968,8 @@ sendMqlTradeRequest MqlTradeRequest {..} = do
 -- Corresponds to MetaTrader5.order_send().
 -- | Send a trade request to the market.
 --
+-- **Uses positionManagementChannel** from Config (defaults to FileBridge for broker requirements).
+--
 -- Sends the 'ORDER_SEND' command with the trade request and receives execution result.
 -- Returns an 'OrderSendResult' with trade execution details.
 --
@@ -378,9 +977,106 @@ sendMqlTradeRequest MqlTradeRequest {..} = do
 orderSend :: MqlTradeRequest   -- ^ Trade request parameters to execute
           -> IO OrderSendResult
 orderSend request = do
+  config <- getConfig
+  case positionManagementChannel config of
+    FileBridge           -> orderSendViaFile request
+    FileBridgeCustom _ _ -> orderSendViaFile request
+    PythonBridge         -> orderSendViaPython request
+
+-- | Send order using file bridge (broker restriction: MUST use EA)
+orderSendViaFile :: MqlTradeRequest -> IO OrderSendResult
+orderSendViaFile mqlReq = do
+  let reqResult = mkOrderSendRequest
+                    (T.pack $ trReqSymbol mqlReq)
+                    (trReqVolume mqlReq)
+                    (trReqType mqlReq)
+                    (trReqPrice mqlReq)
+                    (trReqSl mqlReq)
+                    (trReqTp mqlReq)
+                    (trReqDeviation mqlReq)
+                    (trReqTypeFilling mqlReq)
+                    (trReqTypeTime mqlReq)
+                    (T.pack $ trReqComment mqlReq)
+  case reqResult of
+    Left err -> error $ "Invalid order send request: " ++ show err
+    Right req -> do
+      mResponse <- sendRequestViaFile "order_send" req 5000
+      case mResponse of
+        Nothing -> error "Order send request timed out"
+        Just response -> do
+          let mOrderSend = decode (encode $ responseData response) :: Maybe OrderSendResponse
+          case mOrderSend of
+            Nothing -> error "Failed to parse order send response"
+            Just resp -> return $ convertOrderSendResponse resp
+
+-- | Send order using Python bridge (original implementation)
+orderSendViaPython :: MqlTradeRequest -> IO OrderSendResult
+orderSendViaPython request = do
   send "ORDER_SEND"
   sendMqlTradeRequest request
   readOrderSendResult
+
+-- | Convert OrderSendResponse (7 fields) to OrderSendResult (10 fields)
+convertOrderSendResponse :: OrderSendResponse -> OrderSendResult
+convertOrderSendResponse resp = OrderSendResult
+  { ordSendRetcode          = intToTradeRetcode (orderSendRespRetcode resp)
+  , ordSendDeal             = orderSendRespDeal resp
+  , ordSendOrder            = orderSendRespOrder resp
+  , ordSendVolume           = orderSendRespVolume resp
+  , ordSendPrice            = orderSendRespPrice resp
+  , ordSendBid              = 0.0  -- Not in EA response
+  , ordSendAsk              = 0.0  -- Not in EA response
+  , ordSendComment          = T.unpack $ orderSendRespComment resp
+  , ordSendRequest_id       = 0    -- Not in EA response
+  , ordSendRetcode_external = 0    -- Not in EA response
+  }
+
+-- | Convert Int to TradeRetcode (local helper)
+intToTradeRetcode :: Int -> TradeRetcode
+intToTradeRetcode x =
+  case x of
+    10004 -> TRADE_RETCODE_REQUOTE
+    10006 -> TRADE_RETCODE_REJECT
+    10007 -> TRADE_RETCODE_CANCEL
+    10008 -> TRADE_RETCODE_PLACED
+    10009 -> TRADE_RETCODE_DONE
+    10010 -> TRADE_RETCODE_DONE_PARTIAL
+    10011 -> TRADE_RETCODE_ERROR
+    10012 -> TRADE_RETCODE_TIMEOUT
+    10013 -> TRADE_RETCODE_INVALID
+    10014 -> TRADE_RETCODE_INVALID_VOLUME
+    10015 -> TRADE_RETCODE_INVALID_PRICE
+    10016 -> TRADE_RETCODE_INVALID_STOPS
+    10017 -> TRADE_RETCODE_TRADE_DISABLED
+    10018 -> TRADE_RETCODE_MARKET_CLOSED
+    10019 -> TRADE_RETCODE_NO_MONEY
+    10020 -> TRADE_RETCODE_PRICE_CHANGED
+    10021 -> TRADE_RETCODE_PRICE_OFF
+    10022 -> TRADE_RETCODE_INVALID_EXPIRATION
+    10023 -> TRADE_RETCODE_ORDER_CHANGED
+    10024 -> TRADE_RETCODE_TOO_MANY_REQUESTS
+    10025 -> TRADE_RETCODE_NO_CHANGES
+    10026 -> TRADE_RETCODE_SERVER_DISABLES_AT
+    10027 -> TRADE_RETCODE_CLIENT_DISABLES_AT
+    10028 -> TRADE_RETCODE_LOCKED
+    10029 -> TRADE_RETCODE_FROZEN
+    10030 -> TRADE_RETCODE_INVALID_FILL
+    10031 -> TRADE_RETCODE_CONNECTION
+    10032 -> TRADE_RETCODE_ONLY_REAL
+    10033 -> TRADE_RETCODE_LIMIT_ORDERS
+    10034 -> TRADE_RETCODE_LIMIT_VOLUME
+    10035 -> TRADE_RETCODE_INVALID_ORDER
+    10036 -> TRADE_RETCODE_POSITION_CLOSED
+    10038 -> TRADE_RETCODE_INVALID_CLOSE_VOLUME
+    10039 -> TRADE_RETCODE_CLOSE_ORDER_EXIST
+    10040 -> TRADE_RETCODE_LIMIT_POSITIONS
+    10041 -> TRADE_RETCODE_REJECT_CANCEL
+    10042 -> TRADE_RETCODE_LONG_ONLY
+    10043 -> TRADE_RETCODE_SHORT_ONLY
+    10044 -> TRADE_RETCODE_CLOSE_ONLY
+    10045 -> TRADE_RETCODE_FIFO_CLOSE
+    10046 -> TRADE_RETCODE_HEDGE_PROHIBITED
+    _     -> TRADE_RETCODE_UNKNOWN
 
 -- | Cancel a pending order by ticket number
 --
@@ -424,49 +1120,6 @@ cancelAllOrdersPOST = do
     cancelSingleOrder :: TradeOrder -> IO OrderSendResult
     cancelSingleOrder order = cancelOrderPOST (tradeOrderTicket order)
 
-
--- FIX MAPPING: OpenTradesGET, AccountSummaryGET
-
-
--- 38 matches for "^[ ]*def" in buffer: __init__.py
---     357:    def __init__(self,host='localhost',port=18812):
---     360:    default = localhost
---     362:    default = 18812
---     369:    def __del__(self):
---     372:    def initialize(self,*args,**kwargs):
---     468:    def login(self,*args,**kwargs):
---     595:    def shutdown(self,*args,**kwargs):
---     640:    def version(self,*args,**kwargs):
---     735:    def last_error(self,*args,**kwargs):
---     795:    def account_info(self,*args,**kwargs):
---     929:    def terminal_info(self,*args,**kwargs):
---    1049:    def symbols_total(self,*args,**kwargs):
---    1100:    def symbols_get(self,*args,**kwargs):
---    1218:    def symbol_info(self,*args,**kwargs):
---    1393:    def symbol_info_tick(self,*args,**kwargs):
---    1474:    def symbol_select(self,*args,**kwargs):
---    1673:    def market_book_add(self,*args,**kwargs):
---    1706:    def market_book_get(self,*args,**kwargs):
---    1846:    def market_book_release(self,symbol):
---    1879:    def copy_rates_from(self,symbol, timeframe, date_from, count):
---    2037:    def copy_rates_from_pos(self,symbol,timeframe,start_pos,count):
---    2158:    def copy_rates_range(self,symbol, timeframe, date_from, date_to):
---    2294:    def copy_ticks_from(self,symbol, date_from, count, flags):
---    2449:    def copy_ticks_range(self,symbol, date_from, date_to, flags):
---    2584:    def orders_total(self,*args,**kwargs):
---    2635:    def orders_get(self,*args,**kwargs):
---    2765:    def order_calc_margin(self,*args,**kwargs):
---    2887:    def order_calc_profit(self,*args,**kwargs):
---    3011:    def order_check(self,*args,**kwargs):
---    3176:    def order_send(self,request):
---    3385:    def positions_total(self,*args,**kwargs):
---    3436:    def positions_get(self,*args,**kwargs):
---    3562:    def history_orders_total(self,date_from, date_to):
---    3627:    def history_orders_get(self,*args,**kwargs):
---    3767:    def history_deals_total(self,date_from, date_to):
---    3834:    def history_deals_get(self,*args,**kwargs):
---    4000:    def eval(self,command:str):
---    4003:    def execute(self,command:str)
 
 -- | Get candlestick data using time range
 --
