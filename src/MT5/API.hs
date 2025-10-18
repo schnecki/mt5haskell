@@ -42,6 +42,7 @@ import           GHC.Generics         (Generic)
 
 import           MT5.API.Internal          (sendRequestViaFile)
 import           MT5.Communication         (receive, send, unpickle')
+import qualified MT5.Communication.Request as Req
 import           MT5.Communication.Request (mkAccountInfoRequest, mkPositionsGetRequest,
                                             mkSymbolInfoRequest, mkOrdersGetRequest, mkOrderSendRequest,
                                             mkPositionCloseRequest, mkPositionClosePartialRequest,
@@ -917,15 +918,27 @@ orderCheckViaFile mqlReq = do
                     (trReqTypeTime mqlReq)
                     (T.pack $ trReqComment mqlReq)
   case reqResult of
-    Left err -> error $ "Invalid order check request: " ++ show err
+    Left err -> 
+      -- Validation failure: return error result with appropriate retcode
+      let retcode = case err of
+            Req.InvalidVolume _ -> TRADE_RETCODE_INVALID_VOLUME
+            Req.InvalidPrice _ -> TRADE_RETCODE_INVALID_PRICE
+            Req.InvalidSymbol _ -> TRADE_RETCODE_INVALID
+            _ -> TRADE_RETCODE_INVALID
+          errMsg = "Invalid order check request: " ++ show err
+      in return $ OrderSendResult retcode 0 0 0.0 0.0 0.0 0.0 errMsg 0 0
     Right req -> do
       mResponse <- sendRequestViaFile "order_check" req 5000
       case mResponse of
-        Nothing -> error "Order check request timed out"
+        Nothing -> 
+          -- Timeout: return error result with TRADE_RETCODE_TIMEOUT
+          return $ OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 0.0 0.0 0.0 0.0 "Order check request timed out" 0 0
         Just response -> do
           let mOrderCheck = decode (encode $ responseData response) :: Maybe OrderSendResponse
           case mOrderCheck of
-            Nothing -> error "Failed to parse order check response"
+            Nothing -> 
+              -- Parse failure: return error result with TRADE_RETCODE_ERROR
+              return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 0.0 0.0 0.0 0.0 "Failed to parse order check response" 0 0
             Just resp -> return $ convertOrderSendResponse resp
 
 -- | Check order using Python bridge
@@ -998,15 +1011,27 @@ orderSendViaFile mqlReq = do
                     (trReqTypeTime mqlReq)
                     (T.pack $ trReqComment mqlReq)
   case reqResult of
-    Left err -> error $ "Invalid order send request: " ++ show err
+    Left err -> 
+      -- Validation failure: return error result with appropriate retcode
+      let retcode = case err of
+            Req.InvalidVolume _ -> TRADE_RETCODE_INVALID_VOLUME
+            Req.InvalidPrice _ -> TRADE_RETCODE_INVALID_PRICE
+            Req.InvalidSymbol _ -> TRADE_RETCODE_INVALID
+            _ -> TRADE_RETCODE_INVALID
+          errMsg = "Invalid order send request: " ++ show err
+      in return $ OrderSendResult retcode 0 0 0.0 0.0 0.0 0.0 errMsg 0 0
     Right req -> do
       mResponse <- sendRequestViaFile "order_send" req 5000
       case mResponse of
-        Nothing -> error "Order send request timed out"
+        Nothing -> 
+          -- Timeout: return error result with TRADE_RETCODE_TIMEOUT
+          return $ OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 0.0 0.0 0.0 0.0 "Order send request timed out" 0 0
         Just response -> do
           let mOrderSend = decode (encode $ responseData response) :: Maybe OrderSendResponse
           case mOrderSend of
-            Nothing -> error "Failed to parse order send response"
+            Nothing -> 
+              -- Parse failure: return error result with TRADE_RETCODE_ERROR
+              return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 0.0 0.0 0.0 0.0 "Failed to parse order send response" 0 0
             Just resp -> return $ convertOrderSendResponse resp
 
 -- | Send order using Python bridge (original implementation)

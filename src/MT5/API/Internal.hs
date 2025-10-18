@@ -45,6 +45,12 @@ sendRequestViaFile :: ToJSON a
 sendRequestViaFile action requestData timeoutMs = do
   config <- getConfig
   
+  -- Note: This function is called by *ViaFile implementations that have already
+  -- decided to use file-based communication via positionManagementChannel routing.
+  -- We check communicationChannel to determine which file paths to use, but we
+  -- don't error on PythonBridge because the caller has explicitly chosen FileBridge
+  -- routing via positionManagementChannel.
+  
   case communicationChannel config of
     FileBridge -> do
       -- Get default MT5 files directory
@@ -79,8 +85,25 @@ sendRequestViaFile action requestData timeoutMs = do
       sendRequest reqPath request
       receiveResponse timeoutMs respPath
       
-    PythonBridge ->
-      error "sendRequestViaFile called with PythonBridge channel! Use sendRequestViaPython instead."
+    PythonBridge -> do
+      -- Fall back to default file paths when communicationChannel is PythonBridge
+      -- but positionManagementChannel has routed us here (e.g., orderSend, orderCheck)
+      filesDir <- getMT5FilesDirDefault
+      let reqPath = filesDir ++ "/mt5_api_request.json"
+      let respPath = filesDir ++ "/mt5_api_response.json"
+      
+      -- Initialize files (creates them if they don't exist)
+      initializeFiles reqPath respPath
+      
+      -- Create request
+      let request = Request
+            { requestAction = action
+            , requestData = toJSON requestData
+            }
+      
+      -- Send request and wait for response
+      sendRequest reqPath request
+      receiveResponse timeoutMs respPath
 
 -- | Check if a communication channel supports a given request action.
 --
