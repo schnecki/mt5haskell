@@ -19,7 +19,7 @@ import Data.IORef
 import System.IO    
 import qualified Data.Text as T
 import System.Process
-import MT5.PyProc
+import MT5.Communication.PyProc
 
 -- | Test suite for PyProc data type and management
 spec :: TestTree
@@ -38,7 +38,7 @@ dataTypeTests = testGroup "PyProc Data Type"
         { std_in = CreatePipe, std_out = CreatePipe }
       
       -- Test our PyProc constructor
-      let pyProcess = PyProc testIn testOut testHandle
+      let pyProcess = PyProc testIn testOut testHandle "/fake/path"
       
       -- Test field accessors work (we can't test ProcessHandle equality)
       pyIn pyProcess @?= testIn
@@ -57,7 +57,7 @@ dataTypeTests = testGroup "PyProc Data Type"
       (Just testIn, Just testOut, _, testHandle) <- createProcess $ (proc "echo" ["test"])
         { std_in = CreatePipe, std_out = CreatePipe }
       
-      let pyProcess = PyProc testIn testOut testHandle
+      let pyProcess = PyProc testIn testOut testHandle "/fake/path"
       
       -- Test that we can access fields without error
       let inputHandle = pyIn pyProcess
@@ -85,7 +85,7 @@ ioRefTests = testGroup "IORef Management"
       (Just testIn, Just testOut, _, testHandle) <- createProcess $ (proc "echo" ["test"])
         { std_in = CreatePipe, std_out = CreatePipe }
       
-      let testPyProc = PyProc testIn testOut testHandle
+      let testPyProc = PyProc testIn testOut testHandle "/fake/path"
       
       -- Test writing to our global IORef
       writeIORef pyProc testPyProc
@@ -114,8 +114,8 @@ ioRefTests = testGroup "IORef Management"
       (Just testIn2, Just testOut2, _, testHandle2) <- createProcess $ (proc "echo" ["test2"])
         { std_in = CreatePipe, std_out = CreatePipe }
       
-      let testPyProc1 = PyProc testIn1 testOut1 testHandle1
-      let testPyProc2 = PyProc testIn2 testOut2 testHandle2
+      let testPyProc1 = PyProc testIn1 testOut1 testHandle1 "/fake/path1"
+      let testPyProc2 = PyProc testIn2 testOut2 testHandle2 "/fake/path2"
       
       -- Set first process
       writeIORef pyProc testPyProc1
