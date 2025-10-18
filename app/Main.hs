@@ -5,6 +5,7 @@ module Main
 
 import           Control.Exception
 import           Control.Monad
+import qualified Data.Text         as T
 import           Data.Time
 import           EasyLogger
 import           MT5
@@ -116,8 +117,8 @@ main = do
       putStrLn $ "Initialize result: " ++ show res
       putStrLn "Account Info:"
       accountInfo >>= print
-      putStrLn "Symbols:"
-      symbolsGet Nothing >>= print
+      -- putStrLn "Symbols:"
+      -- symbolsGet Nothing >>= print
 
       case res of
         Right () -> do
@@ -125,6 +126,29 @@ main = do
           testAllCandleAPIs
         Left err -> do
           putStrLn $ "Failed to initialize MT5: " ++ err
+
+      putStrLn "Order send:"
+      res <- orderSend $ MqlTradeRequest
+            { trReqAction = TRADE_ACTION_DEAL
+            , trReqMagic = 12345
+            , trReqOrder = 0
+            , trReqSymbol = "EURUSD.PRO"
+            , trReqVolume = -0.01 -- calculateVolume units (contractSize instrumentData)
+            , trReqPrice = 0.0
+            , trReqStoplimit = 0.0
+            , trReqSl = 1.18
+            , trReqTp = 0
+            , trReqDeviation = 20
+            , trReqType = ORDER_TYPE_SELL
+            , trReqTypeFilling = ORDER_FILLING_IOC
+            , trReqTypeTime = ORDER_TIME_GTC
+            , trReqExpiration = 0
+            , trReqComment = "aral-trader market order"
+            , trReqPosition = 0
+            , trReqPositionBy = 0
+            }
+
+      print res
 
       putStrLn "\nPress enter to exit..."
       void (getLine :: IO String)

@@ -15,33 +15,35 @@ module MT5.Init
     , pipInstallWithEnv
     ) where
 
-import           Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
-import           Control.Exception  (SomeException, catch, throwIO)
-import           Control.Monad      (filterM, liftM2, unless, void, when, (<=<))
-import qualified Data.ByteString    as B
+import           Control.Concurrent       (ThreadId, forkIO, killThread,
+                                           threadDelay)
+import           Control.Exception        (SomeException, catch, throwIO)
+import           Control.Monad            (filterM, liftM2, unless, void, when,
+                                           (<=<))
+import qualified Data.ByteString          as B
 import           Data.IORef
-import           Data.List          (isPrefixOf, sortOn)
-import           Data.Maybe         (fromMaybe, isNothing)
-import           Data.Ord           (Down (..))
-import qualified Data.Text          as T
-import qualified Data.Text.Encoding as Encoding
+import           Data.List                (isPrefixOf, sortOn)
+import           Data.Maybe               (fromMaybe, isNothing)
+import           Data.Ord                 (Down (..))
+import qualified Data.Text                as T
+import qualified Data.Text.Encoding       as Encoding
 import           EasyLogger
 import           GHC.IO
 import           GHC.IO.Handle
-import           System.Directory   (doesDirectoryExist, doesFileExist,
-                                     getDirectoryContents, makeAbsolute,
-                                     removeDirectoryRecursive, removeFile)
+import           System.Directory         (doesDirectoryExist, doesFileExist,
+                                           getDirectoryContents, makeAbsolute,
+                                           removeDirectoryRecursive, removeFile)
 import           System.Exit
-import           System.FilePath    ((</>))
+import           System.FilePath          ((</>))
 import           System.IO
-import           System.IO.Temp     (writeSystemTempFile)
-import           System.Process     hiding (env)
+import           System.IO.Temp           (writeSystemTempFile)
+import           System.Process           hiding (env)
 import           Text.Regex
 
 import           MT5.API
 import           MT5.Communication
+import           MT5.Communication.PyProc
 import           MT5.Config
-import           MT5.PyProc
 
 
 venvPython :: Config -> IO FilePath
@@ -60,9 +62,8 @@ mt5ServerThread = unsafePerformIO $ newIORef (error "Not yet initialized" :: (Th
 
 -- | Create python process
 createPythonProcess :: Config -> IO ()
-createPythonProcess config
-  -- TODO write python file to /tmp/
- = do
+createPythonProcess config = do
+  -- NOTE: Python server file is written to venv directory (not /tmp/) for better isolation
   python <- venvPython config
   -- pythonPath <- writeSystemTempFile "mt5haskell_python_server" (T.unpack (Encoding.decodeLatin1 pythonCode))
   let pythonPath = venvDir config </> "python_server.py"
@@ -76,12 +77,6 @@ createPythonProcess config
 -- =====================================================================
 -- Environment Detection Functions
 -- =====================================================================
-
--- | Helper function similar to whenM from Control.Monad.Extra
-whenM :: Monad m => m Bool -> m () -> m ()
-whenM condM action = do
-  cond <- condM
-  when cond action
 
 -- | Helper function for concatenating results of mapM
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
@@ -100,8 +95,9 @@ locateExecutable executable = do
     $(logError) $ "locate " ++ executable ++ " failed with exit code: " ++ show exitCode
     $(logError) $ "stdout: " ++ stdOut
     $(logError) $ "stderr: " ++ stdErr
+    $(logError) $ "Command used: locate " ++ executable
     error $ "Could not find " ++ executable ++ ". Make sure you have (i) wine installed, (ii) " ++
-      executable ++ " installed in wine, and (iii) the locate database is up to date."
+      executable ++ " installed in wine, and (iii) the locate database is up to date. Update with: sudo updatedb"
   $(logInfo) $ "locate " ++ executable ++ " succeeded: " ++ stdOut
   -- Parse the output to get the first executable path
   let executables = lines stdOut
@@ -376,7 +372,7 @@ startMT5 config = do
   config''' <- setupPythonEnvironment config'' newInstall
   when newInstall createVenv
   startMT5Server config'''
-  threadDelay (1 * 10 ^ 6) -- give it some time to startup
+  threadDelay (1 * 10^(6 :: Int)) -- give it some time to startup
   createPythonProcess config'''
   -- threadDelay (1 * 10 ^ 6) -- give it some time to startup
   -- maybe (return ()) (print <=< loginAccount) (login config)
@@ -433,7 +429,7 @@ startMT5 config = do
           throwIO e
 
         pipInstall winPython winPip name = pip winPython winPip ("install " ++ name)
-        pipUpgrade winPython winPip name = pipInstall winPython winPip ("--upgrade " ++ name)
+        -- pipUpgrade winPython winPip name = pipInstall winPython winPip ("--upgrade " ++ name)
         pip winPython winPip cmd = do
           -- Create a Wine environment for consistent execution
           let wineEnv = PythonEnvironment winPython winPip WineExecution
@@ -488,7 +484,7 @@ stopMT5 :: IO ()
 stopMT5 = do
   send "QUIT" >> receive >>= B.putStr
   putStrLn ""
-  threadDelay (1 * 10^6)
+  threadDelay (1 * 10^(6 :: Int))
   (threadId, devNullRead, devNullWrite) <- readIORef mt5ServerThread
   killThread threadId
   hClose devNullRead

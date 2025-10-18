@@ -6,3 +6,7 @@ mt5linux/
 PLAN*
 /mt5linux
 /stack.yaml.lock
+scripts
+plans/
+FEEDBACK.md
+.#FEEDBACK.md

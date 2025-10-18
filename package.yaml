@@ -34,6 +34,8 @@ dependencies:
 - filepath
 - file-embed
 - temporary
+- aeson        # JSON encoding/decoding for file communication
+- unix         # For atomic file operations (renameFile is POSIX)
 
 ghc-options:
 - -Wall
@@ -59,6 +61,16 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - mt5haskell
+  
+  TestFileComm:
+    main:                TestFileComm.hs
+    source-dirs:         examples
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - mt5haskell
 
 tests:
   mt5haskell-test:
@@ -70,12 +82,19 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - mt5haskell
+    - hspec
+    - hspec-discover
     - tasty
     - tasty-hunit
     - tasty-quickcheck
+    - tasty-hspec
+    - QuickCheck
     - temporary
     - quickcheck-instances
+    - aeson
+    - aeson-qq
     - binary
     - bytestring
     - filepath
     - time
+    - text
