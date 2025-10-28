@@ -277,6 +277,8 @@ for line in sys.stdin:
     elif line == 'POSITIONS_GET':
         log("Received command POSITIONS_GET")
         positions = mt5.positions_get()
+        if positions is None:
+            positions = ()  # Empty tuple if None
         send(len(positions))
         for xs in positions:
             xs = xs._asdict()

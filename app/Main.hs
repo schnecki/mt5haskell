@@ -10,6 +10,7 @@ import           Data.Time
 import           EasyLogger
 import           MT5
 import           MT5.Data.Candle   (MT5Candle (..), MT5CandleData (..))
+import           MT5.Data.DecimalNumber (DecimalNumber (..))
 
 -- | Example: Get candle data for a specific time range
 -- Demonstrates getCandleDataRange which maps to COPY_RATES_RANGE
@@ -134,10 +135,10 @@ main = do
             , trReqOrder = 0
             , trReqSymbol = "EURUSD.PRO"
             , trReqVolume = 0.01  -- (must be positive)
-            , trReqPrice = 0.0
-            , trReqStoplimit = 0.0
-            , trReqSl = 1.18
-            , trReqTp = 0
+            , trReqPrice = DecimalNumber Nothing 0.0
+            , trReqStoplimit = DecimalNumber Nothing 0.0
+            , trReqSl = DecimalNumber Nothing 1.18
+            , trReqTp = DecimalNumber Nothing 0.0
             , trReqDeviation = 20
             , trReqType = ORDER_TYPE_SELL
             , trReqTypeFilling = ORDER_FILLING_IOC
