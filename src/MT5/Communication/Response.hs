@@ -1,5 +1,5 @@
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric  #-}
+{-# LANGUAGE DeriveAnyClass    #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Type-safe response types for MT5 file-based communication
@@ -30,12 +30,16 @@ module MT5.Communication.Response
     , ResponseError(..)
     ) where
 
-import           Control.DeepSeq (NFData)
-import           Data.Aeson      (FromJSON(..), Value(..), withObject, (.:), (.:?), (.!=))
-import           Data.Aeson.Types (Parser, parseEither)
-import           Data.Text       (Text)
-import           Data.Time.Clock (UTCTime)
-import           GHC.Generics    (Generic)
+import           Control.Applicative ((<|>))
+import           Control.DeepSeq     (NFData)
+import           Data.Aeson          (FromJSON (..), Value (..), withObject,
+                                      (.!=), (.:), (.:?))
+import           Data.Aeson.Types    (Parser, parseEither)
+import           Data.Text           (Text)
+import           Data.Time.Clock     (UTCTime)
+import           GHC.Generics        (Generic)
+
+import           MT5.Data.DecimalNumber
 
 
 -- | Response parsing errors
@@ -67,7 +71,7 @@ data OrderSendResponse = OrderSendResponse
   , orderSendRespRetcode :: !Int
   , orderSendRespDeal    :: !Int
   , orderSendRespOrder   :: !Int
-  , orderSendRespVolume  :: !Double
+  , orderSendRespVolume  :: !DecimalNumber
   , orderSendRespPrice   :: !Double
   , orderSendRespComment :: !Text
   } deriving (Show, Eq, Generic, NFData)
@@ -93,7 +97,7 @@ data PositionCloseResponse = PositionCloseResponse
   , positionCloseRetcode :: !Int
   , positionCloseDeal    :: !Int
   , positionCloseOrder   :: !(Maybe Int)
-  , positionCloseVolume  :: !(Maybe Double)
+  , positionCloseVolume  :: !(Maybe DecimalNumber)
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON PositionCloseResponse where
@@ -234,20 +238,20 @@ instance FromJSON CandlesGetResponse where
 
 -- | Response from account_info action
 data AccountInfoResponse = AccountInfoResponse
-  { accountInfoSuccess        :: !Bool
-  , accountInfoLogin          :: !Int
-  , accountInfoBalance        :: !Double
-  , accountInfoEquity         :: !Double
-  , accountInfoProfit         :: !Double
-  , accountInfoMargin         :: !Double
-  , accountInfoMarginFree     :: !Double
-  , accountInfoMarginLevel    :: !Double
-  , accountInfoLeverage       :: !Int
-  , accountInfoCurrency       :: !Text
-  , accountInfoName           :: !Text
-  , accountInfoServer         :: !Text
-  , accountInfoTradeAllowed   :: !Bool
-  , accountInfoTradeExpert    :: !Bool
+  { accountInfoSuccess      :: !Bool
+  , accountInfoLogin        :: !Int
+  , accountInfoBalance      :: !Double
+  , accountInfoEquity       :: !Double
+  , accountInfoProfit       :: !Double
+  , accountInfoMargin       :: !Double
+  , accountInfoMarginFree   :: !Double
+  , accountInfoMarginLevel  :: !Double
+  , accountInfoLeverage     :: !Int
+  , accountInfoCurrency     :: !Text
+  , accountInfoName         :: !Text
+  , accountInfoServer       :: !Text
+  , accountInfoTradeAllowed :: !Bool
+  , accountInfoTradeExpert  :: !Bool
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON AccountInfoResponse where
@@ -270,11 +274,12 @@ instance FromJSON AccountInfoResponse where
 
 
 -- | Single position info from positions_get
+-- {"ticket":128328176,"symbol":"EURUSD.pro","type":0,"volume":0.04000000,"price_open":1.16547000,"price_current":1.16543000,"sl":1.15273000,"tp":0.00000000,"profit":-0.14000000,"swap":0.00000000,"commission":0.00000000,"magic":0,"comment":"aral-trader market order"}
 data PositionInfoResponse = PositionInfoResponse
-  { positionTicket       :: !Int
+  { positionTicket       :: !Integer
   , positionSymbol       :: !Text
   , positionType         :: !Int         -- ^ 0 = BUY, 1 = SELL
-  , positionVolume       :: !Double
+  , positionVolume       :: !DecimalNumber
   , positionPriceOpen    :: !Double
   , positionPriceCurrent :: !Double
   , positionSl           :: !Double
@@ -314,21 +319,21 @@ instance FromJSON PositionsGetResponse where
     PositionsGetResponse
       <$> o .: "success"
       <*> o .: "count"
-      <*> o .: "positions"
+      <*> (o .: "" <|> o .: "positions")  -- MQL5 EA uses empty string key
 
 
 -- | Single order info from orders_get
 data OrderInfoResponse = OrderInfoResponse
-  { orderTicket      :: !Int
-  , orderSymbol      :: !Text
-  , orderType        :: !Int         -- ^ Order type enum
-  , orderVolume      :: !Double
-  , orderPriceOpen   :: !Double
+  { orderTicket       :: !Int
+  , orderSymbol       :: !Text
+  , orderType         :: !Int         -- ^ Order type enum
+  , orderVolume       :: !DecimalNumber
+  , orderPriceOpen    :: !Double
   , orderPriceCurrent :: !Double
-  , orderSl          :: !Double
-  , orderTp          :: !Double
-  , orderMagic       :: !Int
-  , orderComment     :: !Text
+  , orderSl           :: !Double
+  , orderTp           :: !Double
+  , orderMagic        :: !Int
+  , orderComment      :: !Text
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON OrderInfoResponse where

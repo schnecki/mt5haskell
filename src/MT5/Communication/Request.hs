@@ -47,9 +47,11 @@ import qualified Data.Text       as T
 import           Data.Time.Clock (UTCTime)
 import           GHC.Generics    (Generic)
 
-import           MT5.Data.OrderType
-import           MT5.Data.OrderTypeFilling
-import           MT5.Data.OrderTypeTime
+import           MT5.Data.OrderType (OrderType, orderTypeToInt)
+import           MT5.Data.OrderTypeFilling (OrderTypeFilling, orderTypeFillingToInt)
+import           MT5.Data.OrderTypeTime (OrderTypeTime, orderTypeTimeToInt)
+import           MT5.Data.TradeRequestAction (TradeRequestAction, tradeRequestActionToInt)
+import           MT5.Data.DecimalNumber
 
 
 -- | Request validation errors
@@ -67,45 +69,68 @@ data RequestError
 -- Order Management Requests
 --------------------------------------------------------------------------------
 
--- | Request to send a trading order
+-- | Request to send a trading order (complete MT5 MqlTradeRequest)
+--
+-- This mirrors the MqlTradeRequest structure from MT5.Data.MqlTradeRequest
+-- with all 17 fields required for proper order/position handling.
 data OrderSendRequest = OrderSendRequest
-  { orderSendSymbol      :: !Text
-  , orderSendVolume      :: !Double
-  , orderSendOrderType   :: !OrderType
-  , orderSendPrice       :: !Double
-  , orderSendSl          :: !Double
-  , orderSendTp          :: !Double
-  , orderSendDeviation   :: !Int
-  , orderSendTypeFilling :: !OrderTypeFilling
-  , orderSendTypeTime    :: !OrderTypeTime
-  , orderSendComment     :: !Text
+  { orderSendAction      :: !TradeRequestAction  -- ^ Trading operation type (DEAL, SLTP, REMOVE, etc.)
+  , orderSendMagic       :: !Int                -- ^ EA identifier
+  , orderSendOrder       :: !Integer            -- ^ Order ticket (for modifying pending orders)
+  , orderSendSymbol      :: !Text               -- ^ Trading symbol
+  , orderSendVolume      :: !DecimalNumber      -- ^ Volume in lots
+  , orderSendPrice       :: !DecimalNumber      -- ^ Execution price
+  , orderSendStoplimit   :: !DecimalNumber      -- ^ Stop limit price
+  , orderSendSl          :: !DecimalNumber      -- ^ Stop loss
+  , orderSendTp          :: !DecimalNumber      -- ^ Take profit
+  , orderSendDeviation   :: !Int                -- ^ Slippage tolerance
+  , orderSendOrderType   :: !OrderType          -- ^ Order type (BUY, SELL, etc.)
+  , orderSendTypeFilling :: !OrderTypeFilling   -- ^ Fill type
+  , orderSendTypeTime    :: !OrderTypeTime      -- ^ Time type
+  , orderSendExpiration  :: !Int                -- ^ Expiration timestamp
+  , orderSendComment     :: !Text               -- ^ Order comment
+  , orderSendPosition    :: !Integer            -- ^ Position ticket (for close/modify)
+  , orderSendPositionBy  :: !Integer            -- ^ Opposite position ticket (for close_by)
   } deriving (Show, Eq, Generic)
 
 instance ToJSON OrderSendRequest where
   toJSON req = object
-    [ "symbol"       .= orderSendSymbol req
+    [ "action"       .= tradeRequestActionToInt (orderSendAction req)
+    , "magic"        .= orderSendMagic req
+    , "order"        .= orderSendOrder req
+    , "symbol"       .= orderSendSymbol req
     , "volume"       .= orderSendVolume req
-    , "type"         .= fromEnum (orderSendOrderType req)
     , "price"        .= orderSendPrice req
+    , "stoplimit"    .= orderSendStoplimit req
     , "sl"           .= orderSendSl req
     , "tp"           .= orderSendTp req
     , "deviation"    .= orderSendDeviation req
-    , "type_filling" .= fromEnum (orderSendTypeFilling req)
-    , "type_time"    .= fromEnum (orderSendTypeTime req)
+    , "type"         .= orderTypeToInt (orderSendOrderType req)
+    , "type_filling" .= orderTypeFillingToInt (orderSendTypeFilling req)  -- Use MT5-correct conversion
+    , "type_time"    .= orderTypeTimeToInt (orderSendTypeTime req)
+    , "expiration"   .= orderSendExpiration req
     , "comment"      .= orderSendComment req
+    , "position"     .= orderSendPosition req
+    , "position_by"  .= orderSendPositionBy req
     ]
 
 -- | Smart constructor for OrderSendRequest with validation
-mkOrderSendRequest :: Text -> Double -> OrderType -> Double -> Double -> Double 
-                   -> Int -> OrderTypeFilling -> OrderTypeTime -> Text 
+--
+-- Takes ALL 17 fields from MqlTradeRequest to ensure complete order information
+mkOrderSendRequest :: TradeRequestAction -> Int -> Integer -> Text -> DecimalNumber -> DecimalNumber
+                   -> DecimalNumber -> DecimalNumber -> DecimalNumber -> Int -> OrderType
+                   -> OrderTypeFilling -> OrderTypeTime -> Int -> Text -> Integer -> Integer
                    -> Either RequestError OrderSendRequest
-mkOrderSendRequest symbol volume orderType price sl tp deviation filling typeTime comment
-  | T.null symbol          = Left (InvalidSymbol symbol)
-  | volume <= 0            = Left (InvalidVolume volume)
-  | price < 0              = Left (InvalidPrice price)
-  | sl < 0                 = Left (InvalidPrice sl)
-  | tp < 0                 = Left (InvalidPrice tp)
-  | otherwise              = Right $ OrderSendRequest symbol volume orderType price sl tp deviation filling typeTime comment
+mkOrderSendRequest action magic order symbol volume price stoplimit sl tp deviation 
+                   orderType filling typeTime expiration comment position positionBy
+  | T.null symbol                 = Left (InvalidSymbol symbol)
+  | fromDecimalNumber volume < 0 = Left (InvalidVolume (fromDecimalNumber volume))
+  | fromDecimalNumber price < 0   = Left (InvalidPrice (fromDecimalNumber price))
+  | fromDecimalNumber sl < 0      = Left (InvalidPrice (fromDecimalNumber sl))
+  | fromDecimalNumber tp < 0      = Left (InvalidPrice (fromDecimalNumber tp))
+  | otherwise                     = Right $ OrderSendRequest action magic order symbol volume price stoplimit 
+                                                      sl tp deviation orderType filling typeTime 
+                                                      expiration comment position positionBy
 
 
 --------------------------------------------------------------------------------
@@ -131,7 +156,7 @@ mkPositionCloseRequest ticket
 -- | Request to partially close a position
 data PositionClosePartialRequest = PositionClosePartialRequest
   { positionClosePartialTicket :: !Integer
-  , positionClosePartialVolume :: !Double
+  , positionClosePartialVolume :: !DecimalNumber
   } deriving (Show, Eq, Generic, NFData)
 
 instance ToJSON PositionClosePartialRequest where
@@ -141,11 +166,11 @@ instance ToJSON PositionClosePartialRequest where
     ]
 
 -- | Smart constructor for PositionClosePartialRequest
-mkPositionClosePartialRequest :: Integer -> Double -> Either RequestError PositionClosePartialRequest
+mkPositionClosePartialRequest :: Integer -> DecimalNumber -> Either RequestError PositionClosePartialRequest
 mkPositionClosePartialRequest ticket volume
-  | ticket <= 0 = Left (InvalidTicket ticket)
-  | volume <= 0 = Left (InvalidVolume volume)
-  | otherwise   = Right (PositionClosePartialRequest ticket volume)
+  | ticket <= 0                     = Left (InvalidTicket ticket)
+  | fromDecimalNumber volume <= 0  = Left (InvalidVolume (fromDecimalNumber volume))
+  | otherwise                       = Right (PositionClosePartialRequest ticket volume)
 
 
 -- | Request to modify position SL/TP
