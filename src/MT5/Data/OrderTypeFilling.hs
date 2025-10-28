@@ -1,5 +1,7 @@
 module MT5.Data.OrderTypeFilling
     ( OrderTypeFilling (..)
+    , orderTypeFillingToInt
+    , intToOrderTypeFilling
     ) where
 
 
@@ -18,3 +20,24 @@ data OrderTypeFilling
                          -- ORDER_TYPE_SELL_STOP_LIMIT orders, an appropriate limit order
                          -- ORDER_TYPE_BUY_LIMIT/ORDER_TYPE_SELL_LIMIT with the ORDER_FILLING_RETURN type is created.
   deriving (Show, Eq, Enum)
+
+-- | Convert OrderTypeFilling to MT5 integer value
+--
+-- MT5 ACTUAL values (verified via PrintEnumValues.mq5 script):
+-- - ORDER_FILLING_FOK    = 0
+-- - ORDER_FILLING_IOC    = 1
+-- - ORDER_FILLING_RETURN = 2
+--
+-- This MATCHES Haskell's Enum deriving! But we use explicit conversion
+-- for clarity and to avoid future bugs.
+orderTypeFillingToInt :: OrderTypeFilling -> Int
+orderTypeFillingToInt ORDER_FILLING_FOK    = 0  -- MT5 verified value
+orderTypeFillingToInt ORDER_FILLING_IOC    = 1  -- MT5 verified value
+orderTypeFillingToInt ORDER_FILLING_RETURN = 2  -- MT5 verified value
+
+-- | Convert MT5 integer value to OrderTypeFilling
+intToOrderTypeFilling :: Int -> OrderTypeFilling
+intToOrderTypeFilling 0 = ORDER_FILLING_FOK
+intToOrderTypeFilling 1 = ORDER_FILLING_IOC
+intToOrderTypeFilling 2 = ORDER_FILLING_RETURN
+intToOrderTypeFilling _ = ORDER_FILLING_FOK  -- Default to FOK for unknown values
