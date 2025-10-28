@@ -6,7 +6,7 @@ cabal-version: 2.2
 
 name:           mt5haskell
 version:        0.1.0.1
-description:    Please see the README on GitHub at <https://github.com/githubuser/mt5haskell#readme>
+description:    Please see the README on GitHub at <https://github.com/schnecki/mt5haskell#readme>
 homepage:       https://github.com/github.com/schnecki#readme
 bug-reports:    https://github.com/github.com/schnecki/issues
 author:         Manuel Schneckenreither
@@ -42,6 +42,7 @@ library
       MT5.Data.Candle
       MT5.Data.CandleConfig
       MT5.Data.CurrentPrice
+      MT5.Data.DecimalNumber
       MT5.Data.Granularity
       MT5.Data.MqlTradeRequest
       MT5.Data.OrderSendResult
@@ -75,35 +76,6 @@ library
     , easy-logger
     , file-embed
     , filepath
-    , process
-    , python-pickle
-    , regex-compat
-    , temporary
-    , text
-    , time
-    , unix
-  default-language: Haskell2010
-
-executable TestFileComm
-  main-is: TestFileComm.hs
-  other-modules:
-      Paths_mt5haskell
-  autogen-modules:
-      Paths_mt5haskell
-  hs-source-dirs:
-      examples
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
-  build-depends:
-      aeson
-    , base >=4.7 && <5
-    , bytestring
-    , data-default
-    , deepseq
-    , directory
-    , easy-logger
-    , file-embed
-    , filepath
-    , mt5haskell
     , process
     , python-pickle
     , regex-compat
@@ -156,6 +128,7 @@ test-suite mt5haskell-test
       MT5.Data.AccountInfoSpec
       MT5.Data.CandleSpec
       MT5.Data.CurrentPriceSpec
+      MT5.Data.DecimalNumberSpec
       MT5.Data.SymbolInfoSpec
       MT5.Data.TradeOrderSpec
       MT5.InitSpec
