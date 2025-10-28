@@ -10,6 +10,7 @@ import MT5.Data.CurrentPrice
 import MT5.Data.AccountInfo
 import MT5.Data.TradePosition
 import MT5.Data.Candle
+import MT5.Data.DecimalNumber (DecimalNumber(..), mkDecimalNumberFromDouble)
 
 -- | Phase 4: Advanced Business Logic & Trading Calculations
 spec :: TestTree
@@ -358,7 +359,7 @@ genPositiveAccount = do
 genValidBuyPosition :: Gen TradePosition
 genValidBuyPosition = do
   ticket <- choose (1, 999999)
-  volume <- choose (0.01, 10.0)
+  volumeVal <- choose (0.01, 10.0)
   openPrice <- choose (1.0, 200.0)
   currentPrice <- choose (0.5, 400.0)
   stopLoss <- choose (0.1, openPrice * 0.95)  -- Stop loss below open price for buy
@@ -367,6 +368,7 @@ genValidBuyPosition = do
   swap <- choose (-10.0, 10.0)
   
   let time = UTCTime (toEnum 58000) 0
-  return $ TradePosition ticket time time time time POSITION_TYPE_BUY 0 ticket
+  let volume = either (const (DecimalNumber Nothing 0.0)) id $ mkDecimalNumberFromDouble volumeVal
+  return $ TradePosition ticket time time time time POSITION_TYPE_BUY (0 :: Int) (fromInteger ticket)
            POSITION_REASON_CLIENT volume openPrice stopLoss takeProfit currentPrice
            swap profit "EURUSD" "Generated position" "ext123"

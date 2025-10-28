@@ -37,6 +37,13 @@ import Data.Maybe (fromJust)
 import MT5.Data.TradeOrder
 import MT5.Data.OrderType
 import MT5.Data.OrderState
+import MT5.Data.DecimalNumber (DecimalNumber(..), mkDecimalNumberFromDouble)
+
+-- Arbitrary instance for DecimalNumber to support QuickCheck
+instance Arbitrary DecimalNumber where
+  arbitrary = do
+    val <- choose (0.01, 1000.0)
+    return $ either (const (DecimalNumber Nothing 0.0)) id $ mkDecimalNumberFromDouble val
 
 -- | Test suite for TradeOrder data type
 spec :: TestTree
@@ -224,7 +231,7 @@ defaultOrder = TradeOrder
   , tradeOrderType_filling = 1
   , tradeOrderState = ORDER_STATE_PLACED
   , tradeOrderMagic = 12345
-  , tradeOrderVolume_current = 1.0
+  , tradeOrderVolume_current = either (const (DecimalNumber Nothing 0.0)) id $ mkDecimalNumberFromDouble 1.0
   , tradeOrderPrice_open = 1.10000
   , tradeOrderSl = 1.09500
   , tradeOrderTp = 1.10500

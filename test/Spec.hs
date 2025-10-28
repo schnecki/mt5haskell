@@ -11,6 +11,7 @@ import MT5.Data.CandleSpec (candleTests)
 import qualified MT5.Data.AccountInfoSpec as AccountInfoSpec
 import qualified MT5.Data.SymbolInfoSpec as SymbolInfoSpec
 import qualified MT5.Data.TradeOrderSpec as TradeOrderSpec
+import qualified MT5.Data.DecimalNumberSpec as DecimalNumberSpec
 -- Phase 2: Error Handling & Edge Cases
 import qualified MT5.UtilSpec as UtilSpec
 import qualified MT5.CommunicationSpec as CommunicationSpec
@@ -44,6 +45,7 @@ tests integrationTests errorRecoveryTests fileCorruptionTests = testGroup "MT5 T
   , AccountInfoSpec.spec
   , SymbolInfoSpec.spec
   , TradeOrderSpec.spec
+  , DecimalNumberSpec.spec
   -- Phase 2: Error Handling & Edge Cases
   , UtilSpec.spec
   , CommunicationSpec.spec

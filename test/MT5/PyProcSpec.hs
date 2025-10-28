@@ -87,18 +87,21 @@ ioRefTests = testGroup "IORef Management"
       
       let testPyProc = PyProc testIn testOut testHandle "/fake/path"
       
-      -- Test writing to our global IORef
-      writeIORef pyProc testPyProc
+      -- Test writing to our global IORef (with Maybe wrapper)
+      writeIORef pyProc (Just testPyProc)
       
       -- Test reading from our global IORef
-      readPyProc <- readIORef pyProc
+      mReadPyProc <- readIORef pyProc
       
       -- Verify the data is the same (ProcessHandle has no Eq instance)
-      pyIn readPyProc @?= testIn
-      pyOut readPyProc @?= testOut
-      -- Just verify the process handle can be accessed
-      case pyProcHandle readPyProc of
-        ph -> ph `seq` return ()
+      case mReadPyProc of
+        Nothing -> assertFailure "pyProc should contain a value after writing"
+        Just readPyProc -> do
+          pyIn readPyProc @?= testIn
+          pyOut readPyProc @?= testOut
+          -- Just verify the process handle can be accessed
+          case pyProcHandle readPyProc of
+            ph -> ph `seq` return ()
       
       -- Cleanup
       terminateProcess testHandle
@@ -117,15 +120,19 @@ ioRefTests = testGroup "IORef Management"
       let testPyProc1 = PyProc testIn1 testOut1 testHandle1 "/fake/path1"
       let testPyProc2 = PyProc testIn2 testOut2 testHandle2 "/fake/path2"
       
-      -- Set first process
-      writeIORef pyProc testPyProc1
-      readPyProc1 <- readIORef pyProc
-      pyIn readPyProc1 @?= testIn1
+      -- Set first process (with Maybe wrapper)
+      writeIORef pyProc (Just testPyProc1)
+      mReadPyProc1 <- readIORef pyProc
+      case mReadPyProc1 of
+        Nothing -> assertFailure "pyProc1 should not be Nothing"
+        Just readPyProc1 -> pyIn readPyProc1 @?= testIn1
       
-      -- Update to second process
-      writeIORef pyProc testPyProc2
-      readPyProc2 <- readIORef pyProc
-      pyIn readPyProc2 @?= testIn2
+      -- Update to second process (with Maybe wrapper)
+      writeIORef pyProc (Just testPyProc2)
+      mReadPyProc2 <- readIORef pyProc
+      case mReadPyProc2 of
+        Nothing -> assertFailure "pyProc2 should not be Nothing"
+        Just readPyProc2 -> pyIn readPyProc2 @?= testIn2
       
       -- Cleanup
       terminateProcess testHandle1
@@ -139,32 +146,39 @@ ioRefTests = testGroup "IORef Management"
 -- | Error handling tests
 errorHandlingTests :: TestTree
 errorHandlingTests = testGroup "Error Handling"
-  [ testCase "Reading uninitialized pyProc throws error" $ do
-      -- Reset the IORef to uninitialized state
-      writeIORef pyProc (error "PyProc object was not set. You need to call startMT5!")
+  [ testCase "Reading uninitialized pyProc returns Nothing" $ do
+      -- Save original state
+      originalState <- readIORef pyProc
       
-      -- Attempt to read should throw an error
-      result <- try $ do
-        pyprocess <- readIORef pyProc
-        -- Force evaluation by accessing a field
-        return $! pyIn pyprocess
+      -- Reset the IORef to uninitialized state (Nothing)
+      writeIORef pyProc Nothing
       
-      case result of
-        Left (ErrorCall msg) -> 
-          assertBool "Should mention PyProc not set" ("PyProc object was not set" `T.isInfixOf` T.pack msg)
-        Right _ -> 
-          assertFailure "Should have thrown an error for uninitialized PyProc"
+      -- Read the value
+      mPyProc <- readIORef pyProc
+      
+      -- Restore original state (important for subsequent tests!)
+      writeIORef pyProc originalState
+      
+      -- Verify it's Nothing
+      case mPyProc of
+        Nothing -> return ()  -- Expected
+        Just _ -> assertFailure "pyProc should be Nothing when uninitialized"
 
   , testCase "Accessing fields of uninitialized PyProc fails appropriately" $ do
-      -- Reset the IORef to uninitialized state
-      writeIORef pyProc (error "PyProc object was not set. You need to call startMT5!")
+      -- Save original state
+      originalState <- readIORef pyProc
       
-      -- Test accessing pyIn field
-      result <- try $ do
-        pyprocess <- readIORef pyProc
-        return $! pyIn pyprocess
+      -- Reset the IORef to uninitialized state (Nothing)
+      writeIORef pyProc Nothing
       
-      case result of
-        Left (ErrorCall _) -> return () -- Expected
-        Right _ -> assertFailure "Should fail when accessing uninitialized PyProc"
+      -- Try to access fields
+      mPyProc <- readIORef pyProc
+      
+      -- Restore original state (important for subsequent tests!)
+      writeIORef pyProc originalState
+      
+      -- Verify we get Nothing
+      case mPyProc of
+        Nothing -> return ()  -- Expected - can't access fields of Nothing
+        Just _ -> assertFailure "pyProc should be Nothing when uninitialized"
   ]

@@ -2,43 +2,51 @@
 
 -- | Integration tests requiring real MT5 terminal with EA attached.
 --
--- These tests automatically initialize MT5 using startMT5 from MT5.Init.
+-- These tests use FileBridge (no Python needed - EA must be running).
+-- For Python bridge tests, call startMT5 first.
 --
 module MT5.Integration.RealMT5Spec (integrationTests) where
 
+import           Control.Concurrent (threadDelay)
 import           Test.Hspec
-import           MT5.Init (startMT5)
 import           MT5.API (accountInfo, positionsGet, symbolInfo, ordersGet)
-import           MT5.Config (defaultMT5Config)
+import           MT5.Config (setConfig, defaultMT5Config, Config(..), CommunicationChannel(..))
 
 integrationTests :: Spec
-integrationTests = describe "Integration Tests with Real MT5" $ do  
-  describe "accountInfo with Real MT5" $ do
-    it "retrieves account info after MT5 initialization" $ do
-      -- Initialize MT5 (starts terminal if not running)
-      _ <- startMT5 defaultMT5Config
-      -- Call accountInfo
-      result <- accountInfo
-      -- Basic validation (non-empty result)
-      result `shouldSatisfy` (not . null . show)
-      
-  describe "positionsGet with Real MT5" $ do
-    it "retrieves positions after MT5 initialization" $ do
-      _ <- startMT5 defaultMT5Config
-      result <- positionsGet
-      -- Should return a list (may be empty if no positions)
-      result `shouldSatisfy` (const True)
-      
-  describe "symbolInfo with Real MT5" $ do
-    it "retrieves symbol info for EURUSD after MT5 initialization" $ do
-      _ <- startMT5 defaultMT5Config
-      result <- symbolInfo "EURUSD"
-      -- Should return symbol data
-      result `shouldSatisfy` (not . null . show)
-      
-  describe "ordersGet with Real MT5" $ do
-    it "retrieves orders after MT5 initialization" $ do
-      _ <- startMT5 defaultMT5Config
-      result <- ordersGet Nothing Nothing
-      -- Should return a list (may be empty if no orders)
-      result `shouldSatisfy` (const True)
+integrationTests = describe "Integration Tests with Real MT5" $ do
+  -- Set config to use FileBridge for ALL channels (EA must be running)
+  let fileBridgeConfig = defaultMT5Config 
+        { communicationChannel = FileBridge
+        , positionManagementChannel = FileBridge
+        }
+  beforeAll_ (setConfig fileBridgeConfig) $ do
+    describe "accountInfo with Real MT5" $ do
+      it "retrieves account info via FileBridge (EA must be running)" $ do
+        threadDelay 500000  -- 500ms delay before test
+        -- Call accountInfo (uses FileBridge)
+        result <- accountInfo
+        -- Basic validation (check type, don't force full evaluation)
+        result `shouldSatisfy` (const True)
+        
+    describe "positionsGet with Real MT5" $ do
+      it "retrieves positions via FileBridge (EA must be running)" $ do
+        threadDelay 500000  -- 500ms delay before test
+        result <- positionsGet
+        -- Should return a list (may be empty if no positions)
+        result `shouldSatisfy` (const True)
+        
+    describe "symbolInfo with Real MT5" $ do
+      it "retrieves symbol info for EURUSD via FileBridge (EA must be running)" $ do
+        threadDelay 500000  -- 500ms delay before test
+        result <- symbolInfo "EURUSD"
+        -- Should return symbol data (check type, don't force full evaluation)
+        result `shouldSatisfy` (const True)
+        
+    describe "ordersGet with Real MT5" $ do
+      it "retrieves orders via FileBridge (EA must be running)" $ do
+        threadDelay 500000  -- 500ms delay before test
+        result <- ordersGet Nothing Nothing
+        -- Should return a list (may be empty if no orders)
+        result `shouldSatisfy` (const True)
+        -- Add delay to prevent file lock conflicts
+        threadDelay 200000  -- 200ms

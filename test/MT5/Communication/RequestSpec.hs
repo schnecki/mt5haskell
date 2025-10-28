@@ -17,52 +17,66 @@ import           MT5.Communication.Request
 import           MT5.Data.OrderType
 import           MT5.Data.OrderTypeFilling
 import           MT5.Data.OrderTypeTime
+import           MT5.Data.TradeRequestAction
 
 
 spec :: Spec
 spec = do
   describe "OrderSendRequest" $ do
     it "creates valid request with positive volume" $ do
-      let result = mkOrderSendRequest "EURUSD" 0.01 ORDER_TYPE_BUY 1.1000 0.0 0.0 10 
-                                      ORDER_FILLING_FOK ORDER_TIME_GTC "test"
+      let result = mkOrderSendRequest TRADE_ACTION_DEAL 0 0 "EURUSD" 0.01 1.1000 
+                                      0.0 0.0 0.0 10 ORDER_TYPE_BUY 
+                                      ORDER_FILLING_FOK ORDER_TIME_GTC 0 "test" 0 0
       result `shouldSatisfy` isRight
 
     it "rejects empty symbol" $ do
-      let result = mkOrderSendRequest "" 0.01 ORDER_TYPE_BUY 1.1000 0.0 0.0 10 
-                                      ORDER_FILLING_FOK ORDER_TIME_GTC "test"
+      let result = mkOrderSendRequest TRADE_ACTION_DEAL 0 0 "" 0.01 1.1000 
+                                      0.0 0.0 0.0 10 ORDER_TYPE_BUY 
+                                      ORDER_FILLING_FOK ORDER_TIME_GTC 0 "test" 0 0
       result `shouldBe` Left (InvalidSymbol "")
 
     it "rejects negative volume" $ do
-      let result = mkOrderSendRequest "EURUSD" (-0.01) ORDER_TYPE_BUY 1.1000 0.0 0.0 10 
-                                      ORDER_FILLING_FOK ORDER_TIME_GTC "test"
+      let result = mkOrderSendRequest TRADE_ACTION_DEAL 0 0 "EURUSD" (-0.01) 1.1000 
+                                      0.0 0.0 0.0 10 ORDER_TYPE_BUY 
+                                      ORDER_FILLING_FOK ORDER_TIME_GTC 0 "test" 0 0
       result `shouldBe` Left (InvalidVolume (-0.01))
 
     it "rejects zero volume" $ do
-      let result = mkOrderSendRequest "EURUSD" 0.0 ORDER_TYPE_BUY 1.1000 0.0 0.0 10 
-                                      ORDER_FILLING_FOK ORDER_TIME_GTC "test"
+      let result = mkOrderSendRequest TRADE_ACTION_DEAL 0 0 "EURUSD" 0.0 1.1000 
+                                      0.0 0.0 0.0 10 ORDER_TYPE_BUY 
+                                      ORDER_FILLING_FOK ORDER_TIME_GTC 0 "test" 0 0
       result `shouldBe` Left (InvalidVolume 0.0)
 
     it "rejects negative price" $ do
-      let result = mkOrderSendRequest "EURUSD" 0.01 ORDER_TYPE_BUY (-1.1000) 0.0 0.0 10 
-                                      ORDER_FILLING_FOK ORDER_TIME_GTC "test"
+      let result = mkOrderSendRequest TRADE_ACTION_DEAL 0 0 "EURUSD" 0.01 (-1.1000) 
+                                      0.0 0.0 0.0 10 ORDER_TYPE_BUY 
+                                      ORDER_FILLING_FOK ORDER_TIME_GTC 0 "test" 0 0
       result `shouldBe` Left (InvalidPrice (-1.1000))
 
     it "serializes to correct JSON format" $ do
-      let Right req = mkOrderSendRequest "EURUSD" 0.01 ORDER_TYPE_BUY 1.1000 1.0900 1.1100 10 
-                                         ORDER_FILLING_FOK ORDER_TIME_GTC "test order"
+      let Right req = mkOrderSendRequest TRADE_ACTION_DEAL 12345 0 "EURUSD" 0.01 1.1000 
+                                         0.0 1.0900 1.1100 10 ORDER_TYPE_BUY 
+                                         ORDER_FILLING_FOK ORDER_TIME_GTC 0 "test order" 123456 0
       let json = toJSON req
       let expected = [aesonQQ|
         {
+          "action": 1,
+          "magic": 12345,
+          "order": 0,
           "symbol": "EURUSD",
           "volume": 0.01,
-          "type": 0,
           "price": 1.1000,
+          "stoplimit": 0.0,
           "sl": 1.0900,
           "tp": 1.1100,
           "deviation": 10,
+          "type": 0,
           "type_filling": 2,
           "type_time": 0,
-          "comment": "test order"
+          "expiration": 0,
+          "comment": "test order",
+          "position": 123456,
+          "position_by": 0
         }
       |]
       json `shouldBe` expected
