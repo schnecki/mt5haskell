@@ -110,7 +110,7 @@ void ProcessFileRequests()
       return;
 
    if(EnableLogging)
-      Print("Processing request: ", StringSubstr(requestContent, 0, 200));
+      Print("Processing request: ", StringSubstr(requestContent, 0, 500));
 
    //--- Parse and handle request
    string response = HandleRequest(requestContent);
@@ -178,54 +178,84 @@ string HandleRequest(string requestContent)
 //+------------------------------------------------------------------+
 string HandleOrderSend(CJAVal &data)
 {
-   //--- Extract order parameters
+   //--- Extract ALL 17 fields from JSON (complete MqlTradeRequest)
+   ENUM_TRADE_REQUEST_ACTIONS action = (ENUM_TRADE_REQUEST_ACTIONS)data["action"].ToInt();
+   ulong magic = (ulong)data["magic"].ToInt();
+   ulong order = (ulong)data["order"].ToInt();
    string symbol = data["symbol"].ToStr();
    double volume = data["volume"].ToDbl();
-   ENUM_ORDER_TYPE order_type = (ENUM_ORDER_TYPE)data["type"].ToInt();
    double price = data["price"].ToDbl();
+   double stoplimit = data["stoplimit"].ToDbl();
    double sl = data["sl"].ToDbl();
    double tp = data["tp"].ToDbl();
-   string comment = data["comment"].ToStr();
    int deviation = (int)data["deviation"].ToInt();
-   ulong magic = (ulong)data["magic"].ToInt();
+   ENUM_ORDER_TYPE order_type = (ENUM_ORDER_TYPE)data["type"].ToInt();
+   ENUM_ORDER_TYPE_FILLING type_filling = (ENUM_ORDER_TYPE_FILLING)data["type_filling"].ToInt();
+   ENUM_ORDER_TYPE_TIME type_time = (ENUM_ORDER_TYPE_TIME)data["type_time"].ToInt();
+   datetime expiration = (datetime)data["expiration"].ToInt();
+   string comment = data["comment"].ToStr();
+   ulong position = (ulong)data["position"].ToInt();
+   ulong position_by = (ulong)data["position_by"].ToInt();
 
-   //--- Set magic number if provided
-   if(magic > 0)
-      trade.SetExpertMagicNumber(magic);
-
-   //--- Set deviation if provided
-   if(deviation > 0)
-      trade.SetDeviationInPoints(deviation);
-
-   //--- Execute order
-   bool result = false;
-   if(order_type == ORDER_TYPE_BUY || order_type == ORDER_TYPE_SELL)
+   if(EnableLogging)
    {
-      //--- Market order
-      if(order_type == ORDER_TYPE_BUY)
-         result = trade.Buy(volume, symbol, 0, sl, tp, comment);
-      else
-         result = trade.Sell(volume, symbol, 0, sl, tp, comment);
-   }
-   else
-   {
-      //--- Pending order
-      result = trade.OrderOpen(symbol, order_type, volume, 0, price, sl, tp,
-                                ORDER_TIME_GTC, 0, comment);
+      Print("OrderSend: action=", action, " symbol=", symbol, " volume=", volume, 
+            " type=", order_type, " position=", position, " order=", order);
    }
 
-   //--- Build response
+   //--- Build MqlTradeRequest structure
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
+   
+   request.action = action;
+   request.magic = magic;
+   request.order = order;
+   request.symbol = symbol;
+   request.volume = volume;
+   request.price = price;
+   request.stoplimit = stoplimit;
+   request.sl = sl;
+   request.tp = tp;
+   request.deviation = (ulong)deviation;
+   request.type = order_type;
+   request.type_filling = type_filling;
+   request.type_time = type_time;
+   request.expiration = expiration;
+   request.comment = comment;
+   request.position = position;      // ✅ Used for position closure/modification
+   request.position_by = position_by; // ✅ Used for close_by operations
+
+   //--- Smart position close: Use POSITION_PRICE_CURRENT if closing position with price=0
+   //    This matches the pattern shown in MQL5 examples and ensures broker compatibility
+   if(position > 0 && request.price == 0.0)
+   {
+      if(PositionSelectByTicket(position))
+      {
+         request.price = PositionGetDouble(POSITION_PRICE_CURRENT);
+         if(EnableLogging)
+            Print("Position close detected (position=", position, 
+                  "), using POSITION_PRICE_CURRENT: ", DoubleToString(request.price, 5));
+      }
+   }
+
+   //--- Send order using low-level OrderSend
+   bool success = OrderSend(request, result);
+
+   if(EnableLogging)
+   {
+      Print("OrderSend result: success=", success, " retcode=", result.retcode,
+            " deal=", result.deal, " order=", result.order);
+   }
+
+   //--- Build response with all available fields
    CJAVal response;
-   response["success"] = result;
-   response["retcode"] = (int)trade.ResultRetcode();
-   response["retcode_description"] = trade.ResultRetcodeDescription();
-   response["deal"] = (long)trade.ResultDeal();
-   response["order"] = (long)trade.ResultOrder();
-   response["volume"] = trade.ResultVolume();
-   response["price"] = trade.ResultPrice();
-   response["bid"] = trade.ResultBid();
-   response["ask"] = trade.ResultAsk();
-   response["comment"] = trade.ResultComment();
+   response["success"] = success;
+   response["retcode"] = (int)result.retcode;
+   response["deal"] = (long)result.deal;
+   response["order"] = (long)result.order;
+   response["volume"] = result.volume;
+   response["price"] = result.price;
+   response["comment"] = result.comment;
 
    return response.Serialize();
 }
@@ -295,8 +325,9 @@ string HandleOrderCancel(CJAVal &data)
 string HandlePositionsGet()
 {
    CJAVal response;
-   CJAVal positions;
-   positions.m_type = jtARRAY;
+   
+   // Build positions array directly in response object
+   response["positions"].m_type = jtARRAY;
 
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
@@ -318,13 +349,12 @@ string HandlePositionsGet()
          position["magic"] = (long)positionInfo.Magic();
          position["comment"] = positionInfo.Comment();
 
-         positions.Add(position);
+         response["positions"].Add(position);
       }
    }
 
    response["success"] = true;
    response["count"] = total;
-   response["positions"] = positions;
 
    return response.Serialize();
 }
@@ -335,8 +365,9 @@ string HandlePositionsGet()
 string HandleOrdersGet()
 {
    CJAVal response;
-   CJAVal orders;
-   orders.m_type = jtARRAY;
+   
+   // Build orders array directly in response object
+   response["orders"].m_type = jtARRAY;
 
    int total = OrdersTotal();
    for(int i = 0; i < total; i++)
@@ -356,13 +387,12 @@ string HandleOrdersGet()
          order["comment"] = orderInfo.Comment();
          order["state"] = (int)orderInfo.State();
 
-         orders.Add(order);
+         response["orders"].Add(order);
       }
    }
 
    response["success"] = true;
    response["count"] = total;
-   response["orders"] = orders;
 
    return response.Serialize();
 }
@@ -386,6 +416,8 @@ string HandleAccountInfo()
    response["name"] = AccountInfoString(ACCOUNT_NAME);
    response["server"] = AccountInfoString(ACCOUNT_SERVER);
    response["leverage"] = (long)AccountInfoInteger(ACCOUNT_LEVERAGE);
+   response["trade_allowed"] = (bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED);
+   response["trade_expert"] = (bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
 
    return response.Serialize();
 }
@@ -772,7 +804,7 @@ void WriteResponse(string response)
       responseFileHandle.Close();
 
       if(EnableLogging)
-         Print("Response written: ", StringSubstr(response, 0, 200));
+         Print("Response written: ", StringSubstr(response, 0, 500));
    }
    else
    {
