@@ -19,7 +19,7 @@ import qualified Data.ByteString.Lazy as BSL
 import           Data.Text            (Text)
 import qualified Data.Text            as T
 
-import           MT5.Communication.File  (getMT5FilesDirDefault, sendRequest, receiveResponse, initializeFiles)
+import           MT5.Communication.File  (getMT5FilesDirDefault, sendRequestAndReceive, initializeFiles)
 import           MT5.Communication.Types (Request(..), Response(..))
 import           MT5.Config              (Config(..), CommunicationChannel(..), getConfig)
 
@@ -67,9 +67,8 @@ sendRequestViaFile action requestData timeoutMs = do
             , requestData = toJSON requestData
             }
       
-      -- Send request and wait for response
-      sendRequest reqPath request
-      receiveResponse timeoutMs respPath
+      -- Send request and wait for response (atomically with lock)
+      sendRequestAndReceive reqPath respPath request timeoutMs
       
     FileBridgeCustom reqPath respPath -> do
       -- Initialize custom file paths
@@ -81,9 +80,8 @@ sendRequestViaFile action requestData timeoutMs = do
             , requestData = toJSON requestData
             }
       
-      -- Send request and wait for response
-      sendRequest reqPath request
-      receiveResponse timeoutMs respPath
+      -- Send request and wait for response (atomically with lock)
+      sendRequestAndReceive reqPath respPath request timeoutMs
       
     PythonBridge -> do
       -- Fall back to default file paths when communicationChannel is PythonBridge
@@ -101,9 +99,8 @@ sendRequestViaFile action requestData timeoutMs = do
             , requestData = toJSON requestData
             }
       
-      -- Send request and wait for response
-      sendRequest reqPath request
-      receiveResponse timeoutMs respPath
+      -- Send request and wait for response (atomically with lock)
+      sendRequestAndReceive reqPath respPath request timeoutMs
 
 -- | Check if a communication channel supports a given request action.
 --
