@@ -6,6 +6,8 @@ module MT5.Data.TradePosition
 
 import           Data.Time.Clock (UTCTime)
 
+import           MT5.Data.DecimalNumber
+
 
 data PositionReason
   = POSITION_REASON_CLIENT
@@ -22,7 +24,7 @@ data PositionType
 
 
 data TradePosition = TradePosition
-  { trPosTicket          :: Int
+  { trPosTicket          :: Integer
   , trPosTime            :: UTCTime
   , trPosTime_msc        :: UTCTime
   , trPosTime_update     :: UTCTime
@@ -31,7 +33,7 @@ data TradePosition = TradePosition
   , trPosMagic           :: Int
   , trPosIdentifier      :: Int
   , trPosReason          :: PositionReason
-  , trPosVolume          :: Double
+  , trPosVolume          :: DecimalNumber
   , trPosPriceOpen       :: Double
   , trPosSl              :: Double
   , trPosTp              :: Double

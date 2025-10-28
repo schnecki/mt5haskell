@@ -7,6 +7,7 @@ import           Data.Time.Clock     (UTCTime)
 
 import           MT5.Data.OrderState
 import           MT5.Data.OrderType
+import           MT5.Data.DecimalNumber
 
 data TradeOrder = TradeOrder
   { tradeOrderTicket          :: Int
@@ -18,7 +19,7 @@ data TradeOrder = TradeOrder
   , tradeOrderType_filling    :: Int
   , tradeOrderState           :: OrderState
   , tradeOrderMagic           :: Int
-  , tradeOrderVolume_current  :: Double
+  , tradeOrderVolume_current  :: DecimalNumber
   , tradeOrderPrice_open      :: Double
   , tradeOrderSl              :: Double
   , tradeOrderTp              :: Double

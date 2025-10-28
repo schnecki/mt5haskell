@@ -7,12 +7,13 @@ module MT5.Data.OrderSendResult
     ) where
 
 import           MT5.Communication
+import           MT5.Data.DecimalNumber
 
 data OrderSendResult = OrderSendResult
   { ordSendRetcode          :: TradeRetcode
   , ordSendDeal             :: Int
   , ordSendOrder            :: Int
-  , ordSendVolume           :: Double
+  , ordSendVolume           :: DecimalNumber
   , ordSendPrice            :: Double
   , ordSendBid              :: Double
   , ordSendAsk              :: Double
@@ -28,7 +29,7 @@ readOrderSendResult =
   <$> (toTradeRetcode . unpickle' "Int" <$> receive)
   <*> (unpickle' "Int" <$> receive)
   <*> (unpickle' "Int" <$> receive)
-  <*> (unpickle' "Double" <$> receive)
+  <*> (fmap (either (const (DecimalNumber Nothing 0.0)) id . mkDecimalNumberFromDouble) (unpickle' "Double" <$> receive))
   <*> (unpickle' "Double" <$> receive)
   <*> (unpickle' "Double" <$> receive)
   <*> (unpickle' "Double" <$> receive)
