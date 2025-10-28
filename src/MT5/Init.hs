@@ -72,7 +72,7 @@ createPythonProcess config = do
     writeFile pythonPath (T.unpack (Encoding.decodeLatin1 pythonCode))
   (Just inp, Just out, _, phandle) <-
     createProcess (proc python [pythonPath]) {cwd = Just ".", std_in = CreatePipe, std_out = CreatePipe}
-  writeIORef pyProc $ PyProc inp out phandle pythonPath
+  writeIORef pyProc $ Just $ PyProc inp out phandle pythonPath
 
 -- =====================================================================
 -- Environment Detection Functions
@@ -489,7 +489,10 @@ stopMT5 = do
   killThread threadId
   hClose devNullRead
   hClose devNullWrite
-  PyProc inp out pHandle pythonPath <- readIORef pyProc
-  cleanupProcess (Just inp, Just out, Nothing, pHandle)
-  fileExists <- doesFileExist pythonPath
-  when fileExists $ removeFile pythonPath
+  mPyProc <- readIORef pyProc
+  case mPyProc of
+    Nothing -> return ()  -- Python not initialized, nothing to shutdown
+    Just (PyProc inp out pHandle pythonPath) -> do
+      cleanupProcess (Just inp, Just out, Nothing, pHandle)
+      fileExists <- doesFileExist pythonPath
+      when fileExists $ removeFile pythonPath

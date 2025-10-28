@@ -29,16 +29,21 @@ import           Debug.Trace
 -- | Send a command + arguments to python stdin
 send :: String -> IO ()
 send cmd = do
-  (PyProc pyIn _ _ _) <- readIORef pyProc
-  $(logPrintDebug) $ "Sending: " ++ cmd
-  hPutStrLn pyIn cmd
-  hFlush pyIn
+  mPyProc <- readIORef pyProc
+  case mPyProc of
+    Nothing -> error "PyProc object was not set. You need to call startMT5!"
+    Just (PyProc pyIn _ _ _) -> do
+      $(logPrintDebug) $ "Sending: " ++ cmd
+      hPutStrLn pyIn cmd
+      hFlush pyIn
 
 -- | Receive output from stdout of python
 receive :: IO B.ByteString
 receive = do
-  (PyProc _ pyOut _ _) <- readIORef pyProc
-  readNextObject pyOut
+  mPyProc <- readIORef pyProc
+  case mPyProc of
+    Nothing -> error "PyProc object was not set. You need to call startMT5!"
+    Just (PyProc _ pyOut _ _) -> readNextObject pyOut
   where
     readNextObject :: Handle -> IO B.ByteString
     readNextObject h = do

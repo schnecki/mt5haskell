@@ -9,8 +9,10 @@ import           System.IO.Unsafe (unsafePerformIO)
 import           System.Process
 
 -- | Python process object, fetchable from within IO so we don't need to pass it to every function/hide it with Reader
-pyProc :: IORef PyProc
-pyProc = unsafePerformIO $ newIORef (error "PyProc object was not set. You need to call startMT5!" :: PyProc)
+-- | Initialized to Nothing; set by startMT5
+pyProc :: IORef (Maybe PyProc)
+pyProc = unsafePerformIO $ newIORef Nothing
+{-# NOINLINE pyProc #-}
 
 
 -- | Python process handles
