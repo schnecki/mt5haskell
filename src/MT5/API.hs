@@ -1,8 +1,9 @@
-{-# LANGUAGE DeriveAnyClass    #-}
-{-# LANGUAGE DeriveGeneric     #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE DeriveAnyClass      #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 
 module MT5.API
   ( SymbolGroup (..),
@@ -28,6 +29,7 @@ module MT5.API
   ) where
 
 import           Control.DeepSeq
+import           Control.Exception           (SomeException, try)
 import           Control.Monad               (replicateM)
 import           Data.Aeson                  (Value, decode, encode)
 import qualified Data.ByteString.Lazy        as BSL
@@ -37,7 +39,9 @@ import           Data.Text                   (Text)
 import qualified Data.Text                   as T
 import           Data.Time                   (UTCTime, getCurrentTime)
 import           Data.Time.Format            (defaultTimeLocale, formatTime)
-import           EasyLogger                  (logDebug, logInfo)
+import           EasyLogger                  (logDebug, logDebugText, logInfo,
+                                              logInfoText, logWarning,
+                                              logWarningText)
 import           GHC.Generics                (Generic)
 import           System.IO.Unsafe            (unsafePerformIO)
 
@@ -77,12 +81,13 @@ import           MT5.Data                    (AccountInfo (..),
                                               TradePosition (..),
                                               readOrderSendResult,
                                               readSymbolInfo)
-import           MT5.Data.DecimalNumber       (DecimalNumber(..), mkDecimalNumberFromDouble)
 import           MT5.Data.AccountInfo        (AccountMarginMode (..),
                                               AccountStopoutMode (..),
                                               AccountTradeMode (..))
 import           MT5.Data.Candle             (MT5Candle (MT5Candle),
                                               MT5CandleData (MT5CandleData))
+import           MT5.Data.DecimalNumber      (DecimalNumber (..),
+                                              mkDecimalNumberFromDouble)
 import           MT5.Data.Granularity        (MT5Granularity, toMT5TimeframeInt)
 import           MT5.Data.OrderSendResult    (TradeRetcode (..))
 import           MT5.Data.OrderState         (OrderState (..))
@@ -165,7 +170,7 @@ loginAccount Login {..} = do
 -- Returns an 'AccountInfo' record with all account details.
 --
 -- Corresponds to MetaTrader5.account_info().
-accountInfo :: IO AccountInfo
+accountInfo :: IO (Either MT5Error AccountInfo)
 accountInfo = do
   config <- getConfig
   case communicationChannel config of
@@ -174,21 +179,28 @@ accountInfo = do
     PythonBridge         -> accountInfoViaPython
 
 -- | Get account info via file-based communication
-accountInfoViaFile :: IO AccountInfo
+accountInfoViaFile :: IO (Either MT5Error AccountInfo)
 accountInfoViaFile = do
+  $(logInfoText) "Fetching account info via FileBridge"
   let req = mkAccountInfoRequest
 
   -- Send request and wait for response (5 second timeout)
   mResponse <- sendRequestViaFile "account_info" req 5000
 
   case mResponse of
-    Nothing -> error "Account info request timed out"
+    Nothing -> do
+      $(logWarningText) "Account info request timed out after 5000ms"
+      return $ Left $ TimeoutError "account_info" 5000
     Just response -> do
       -- Parse the response data as AccountInfoResponse
       let mAccountInfo = decode (encode $ responseData response) :: Maybe AccountInfoResponse
       case mAccountInfo of
-        Nothing      -> error "Failed to parse account info response"
-        Just accResp -> return $ convertAccountInfoResponse accResp
+        Nothing -> do
+          $(logWarningText) "Failed to parse account info response"
+          return $ Left $ ParseError "AccountInfoResponse" (T.pack $ show response)
+        Just accResp -> do
+          $(logDebugText) "Successfully parsed account info response"
+          return $ Right $ convertAccountInfoResponse accResp
 
 -- | Convert AccountInfoResponse to AccountInfo
 convertAccountInfoResponse :: AccountInfoResponse -> AccountInfo
@@ -224,38 +236,50 @@ convertAccountInfoResponse resp = AccountInfo
   }
 
 -- | Get account info via Python bridge (legacy compatibility)
-accountInfoViaPython :: IO AccountInfo
+accountInfoViaPython :: IO (Either MT5Error AccountInfo)
 accountInfoViaPython = do
-  send "ACCOUNT_INFO"
-  AccountInfo
-    <$> (unpickle' "Int" <$> receive)
-    <*> (toEnum . unpickle' "Int" <$> receive)
-    <*> (unpickle' "Int" <$> receive)
-    <*> (unpickle' "Int" <$> receive)
-    <*> (toEnum . unpickle' "Int" <$> receive)
-    <*> (unpickle' "Bool" <$> receive)
-    <*> (unpickle' "Bool" <$> receive)
-    <*> (toEnum . unpickle' "Int" <$> receive)
-    <*> (unpickle' "Int" <$> receive)
-    <*> (unpickle' "Bool" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "Double" <$> receive)
-    <*> (unpickle' "String" <$> receive)
-    <*> (unpickle' "String" <$> receive)
-    <*> (unpickle' "String" <$> receive)
-    <*> (unpickle' "String" <$> receive)
+  $(logInfoText) "Fetching account info via PythonBridge"
+
+  -- Wrap in try block to catch any exceptions (Option B approach)
+  result <- try $ do
+    send "ACCOUNT_INFO"
+    AccountInfo
+      <$> (unpickle' "Int" <$> receive)
+      <*> (toEnum . unpickle' "Int" <$> receive)
+      <*> (unpickle' "Int" <$> receive)
+      <*> (unpickle' "Int" <$> receive)
+      <*> (toEnum . unpickle' "Int" <$> receive)
+      <*> (unpickle' "Bool" <$> receive)
+      <*> (unpickle' "Bool" <$> receive)
+      <*> (toEnum . unpickle' "Int" <$> receive)
+      <*> (unpickle' "Int" <$> receive)
+      <*> (unpickle' "Bool" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "Double" <$> receive)
+      <*> (unpickle' "String" <$> receive)
+      <*> (unpickle' "String" <$> receive)
+      <*> (unpickle' "String" <$> receive)
+      <*> (unpickle' "String" <$> receive)
+
+  case result of
+    Left (e :: SomeException) -> do
+      $(logWarning) $ "Python bridge error: " ++ show e
+      return $ Left $ PythonProcessError (T.pack $ show e)
+    Right info -> do
+      $(logDebugText) "Successfully fetched account info via Python"
+      return $ Right info
 
 -- | Request the last error message from the Python server.
 --
@@ -282,7 +306,7 @@ getError formatString = do
 -- Returns a list of 'TradePosition' records.
 --
 -- Corresponds to MetaTrader5.positions_get().
-positionsGet :: IO [TradePosition]
+positionsGet :: IO (Either MT5Error [TradePosition])
 positionsGet = do
   config <- getConfig
   case positionManagementChannel config of
@@ -291,21 +315,29 @@ positionsGet = do
     PythonBridge         -> positionsGetViaPython
 
 -- | Get positions via file-based communication
-positionsGetViaFile :: Maybe Symbol -> IO [TradePosition]
+positionsGetViaFile :: Maybe Symbol -> IO (Either MT5Error [TradePosition])
 positionsGetViaFile mSymbol = do
+  $(logInfo) $ "Fetching positions via FileBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mSymbol
   let req = mkPositionsGetRequest (fmap T.pack mSymbol)
 
   -- Send request and wait for response (5 second timeout)
   mResponse <- sendRequestViaFile "positions_get" req 5000
 
   case mResponse of
-    Nothing -> error "Positions get request timed out"
+    Nothing -> do
+      $(logWarningText) "Positions get request timed out after 5000ms"
+      return $ Left $ TimeoutError "positions_get" 5000
     Just response -> do
       -- Parse the response data as PositionsGetResponse
       let mPositionsResp = decode (encode $ responseData response) :: Maybe PositionsGetResponse
       case mPositionsResp of
-        Nothing -> error "Failed to parse positions get response"
-        Just posResp -> return $ map convertPositionInfoResponse (positionsGetPositions posResp)
+        Nothing -> do
+          $(logWarningText) "Failed to parse positions get response"
+          return $ Left $ ParseError "PositionsGetResponse" (T.pack $ show response)
+        Just posResp -> do
+          let positions = map convertPositionInfoResponse (positionsGetPositions posResp)
+          $(logDebug) $ "Successfully parsed " ++ show (length positions) ++ " positions"
+          return $ Right positions
 
 -- | Convert PositionInfoResponse to TradePosition
 convertPositionInfoResponse :: PositionInfoResponse -> TradePosition
@@ -332,31 +364,43 @@ convertPositionInfoResponse resp = TradePosition
   }
 
 -- | Get positions via Python bridge (legacy compatibility)
-positionsGetViaPython :: IO [TradePosition]
+positionsGetViaPython :: IO (Either MT5Error [TradePosition])
 positionsGetViaPython = do
-  send "POSITIONS_GET"
-  len <- unpickle' "Int" <$> receive
-  replicateM len
-    $ TradePosition
-        <$> (unpickle' "Int" <$> receive)
-        <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
-        <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
-        <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
-        <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
-        <*> (toEnum . unpickle' "Int" <$> receive)
-        <*> (unpickle' "Int" <$> receive)
-        <*> (unpickle' "Int" <$> receive)
-        <*> (toEnum . unpickle' "Int" <$> receive)
-        <*> (either (const (DecimalNumber Nothing 0.0)) id . mkDecimalNumberFromDouble . unpickle' "Double" <$> receive)
-        <*> (unpickle' "Double" <$> receive)
-        <*> (unpickle' "Double" <$> receive)
-        <*> (unpickle' "Double" <$> receive)
-        <*> (unpickle' "Double" <$> receive)
-        <*> (unpickle' "Double" <$> receive)
-        <*> (unpickle' "Double" <$> receive)
-        <*> (unpickle' "String" <$> receive)
-        <*> (unpickle' "String" <$> receive)
-        <*> (unpickle' "String" <$> receive)
+  $(logInfoText) "Fetching positions via PythonBridge"
+
+  -- Wrap in try block to catch any exceptions (Option B approach)
+  result <- try $ do
+    send "POSITIONS_GET"
+    len <- unpickle' "Int" <$> receive
+    replicateM len
+      $ TradePosition
+          <$> (unpickle' "Int" <$> receive)
+          <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (toEnum . unpickle' "Int" <$> receive)
+          <*> (unpickle' "Int" <$> receive)
+          <*> (unpickle' "Int" <$> receive)
+          <*> (toEnum . unpickle' "Int" <$> receive)
+          <*> (either (const (DecimalNumber Nothing 0.0)) id . mkDecimalNumberFromDouble . unpickle' "Double" <$> receive)
+          <*> (unpickle' "Double" <$> receive)
+          <*> (unpickle' "Double" <$> receive)
+          <*> (unpickle' "Double" <$> receive)
+          <*> (unpickle' "Double" <$> receive)
+          <*> (unpickle' "Double" <$> receive)
+          <*> (unpickle' "Double" <$> receive)
+          <*> (unpickle' "String" <$> receive)
+          <*> (unpickle' "String" <$> receive)
+          <*> (unpickle' "String" <$> receive)
+
+  case result of
+    Left (e :: SomeException) -> do
+      $(logWarning) $ "Python bridge error: " ++ show e
+      return $ Left $ PythonProcessError (T.pack $ show e)
+    Right positions -> do
+      $(logDebug) $ "Successfully fetched " ++ show (length positions) ++ " positions via Python"
+      return $ Right positions
 
 -- | Close a position completely.
 --
@@ -400,37 +444,40 @@ positionCloseViaFile ticket = do
 positionCloseViaPython :: Ticket -> IO (Either MT5Error Bool)
 positionCloseViaPython ticket = do
   -- First get the position to know its details
-  positions <- positionsGet
-  case filter (\p -> trPosTicket p == ticket) positions of
-    [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
-    (pos:_) -> do
-      -- Create opposite order to close the position
-      let oppositeType = case trPosType pos of
-            POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
-            POSITION_TYPE_SELL -> ORDER_TYPE_BUY
+  positionsResult <- positionsGet
+  case positionsResult of
+    Left err -> return $ Left err
+    Right positions ->
+      case filter (\p -> trPosTicket p == ticket) positions of
+        [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+        (pos:_) -> do
+          -- Create opposite order to close the position
+          let oppositeType = case trPosType pos of
+                POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
+                POSITION_TYPE_SELL -> ORDER_TYPE_BUY
 
-      let closeRequest = MqlTradeRequest
-            { trReqAction      = TRADE_ACTION_DEAL
-            , trReqMagic       = 0
-            , trReqOrder       = 0
-            , trReqSymbol      = trPosSymbol pos
-            , trReqVolume      = trPosVolume pos
-            , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
-            , trReqStoplimit   = DecimalNumber Nothing 0.0
-            , trReqSl          = DecimalNumber Nothing 0.0
-            , trReqTp          = DecimalNumber Nothing 0.0
-            , trReqDeviation   = 10
-            , trReqType        = oppositeType
-            , trReqTypeFilling = ORDER_FILLING_FOK
-            , trReqTypeTime    = ORDER_TIME_GTC
-            , trReqExpiration  = 0
-            , trReqComment     = "Close position " ++ show ticket
-            , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
-            , trReqPositionBy  = 0
-            }
+          let closeRequest = MqlTradeRequest
+                { trReqAction      = TRADE_ACTION_DEAL
+                , trReqMagic       = 0
+                , trReqOrder       = 0
+                , trReqSymbol      = trPosSymbol pos
+                , trReqVolume      = trPosVolume pos
+                , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
+                , trReqStoplimit   = DecimalNumber Nothing 0.0
+                , trReqSl          = DecimalNumber Nothing 0.0
+                , trReqTp          = DecimalNumber Nothing 0.0
+                , trReqDeviation   = 10
+                , trReqType        = oppositeType
+                , trReqTypeFilling = ORDER_FILLING_FOK
+                , trReqTypeTime    = ORDER_TIME_GTC
+                , trReqExpiration  = 0
+                , trReqComment     = "Close position " ++ show ticket
+                , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
+                , trReqPositionBy  = 0
+                }
 
-      result <- orderSendViaPython closeRequest
-      return $ Right $ ordSendRetcode result == TRADE_RETCODE_DONE
+          result <- orderSendViaPython closeRequest
+          return $ ((== TRADE_RETCODE_DONE) . ordSendRetcode) <$> result
 
 -- | Close a position partially (reduce volume).
 --
@@ -516,68 +563,74 @@ positionClosePartialViaPython ticket volume = do
     Left _ -> return $ Left $ ValidationError $ T.pack $ "Invalid volume: " ++ show volume
     Right vol -> do
       -- First get the position to know its details
-      positions <- positionsGet
-      case filter (\p -> trPosTicket p == ticket) positions of
-        [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
-        (pos:_) -> do
-          -- Create opposite order with partial volume to close
-          let oppositeType = case trPosType pos of
-                POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
-                POSITION_TYPE_SELL -> ORDER_TYPE_BUY
+      positionsResult <- positionsGet
+      case positionsResult of
+        Left err -> return $ Left err
+        Right positions ->
+          case filter (\p -> trPosTicket p == ticket) positions of
+            [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+            (pos:_) -> do
+              -- Create opposite order with partial volume to close
+              let oppositeType = case trPosType pos of
+                    POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
+                    POSITION_TYPE_SELL -> ORDER_TYPE_BUY
 
-          let closeRequest = MqlTradeRequest
-                { trReqAction      = TRADE_ACTION_DEAL
-                , trReqMagic       = 0
-                , trReqOrder       = 0
-                , trReqSymbol      = trPosSymbol pos
-                , trReqVolume      = vol  -- Partial volume (now DecimalNumber type)
-                , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
-                , trReqStoplimit   = DecimalNumber Nothing 0.0
-                , trReqSl          = DecimalNumber Nothing 0.0
-                , trReqTp          = DecimalNumber Nothing 0.0
-                , trReqDeviation   = 10
-                , trReqType        = oppositeType
-                , trReqTypeFilling = ORDER_FILLING_FOK
-                , trReqTypeTime    = ORDER_TIME_GTC
-                , trReqExpiration  = 0
-                , trReqComment     = "Close partial " ++ show ticket
-                , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
-                , trReqPositionBy  = 0
-                }
+              let closeRequest = MqlTradeRequest
+                    { trReqAction      = TRADE_ACTION_DEAL
+                    , trReqMagic       = 0
+                    , trReqOrder       = 0
+                    , trReqSymbol      = trPosSymbol pos
+                    , trReqVolume      = vol  -- Partial volume (now DecimalNumber type)
+                    , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
+                    , trReqStoplimit   = DecimalNumber Nothing 0.0
+                    , trReqSl          = DecimalNumber Nothing 0.0
+                    , trReqTp          = DecimalNumber Nothing 0.0
+                    , trReqDeviation   = 10
+                    , trReqType        = oppositeType
+                    , trReqTypeFilling = ORDER_FILLING_FOK
+                    , trReqTypeTime    = ORDER_TIME_GTC
+                    , trReqExpiration  = 0
+                    , trReqComment     = "Close partial " ++ show ticket
+                    , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
+                    , trReqPositionBy  = 0
+                    }
 
-          result <- orderSendViaPython closeRequest
-          return $ Right $ ordSendRetcode result == TRADE_RETCODE_DONE
+              result <- orderSendViaPython closeRequest
+              return $ ((TRADE_RETCODE_DONE ==) . ordSendRetcode) <$> result
 
 -- | Modify position via Python bridge
 positionModifyViaPython :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
 positionModifyViaPython ticket sl tp = do
   -- Get position to know its symbol
-  positions <- positionsGet
-  case filter (\p -> trPosTicket p == ticket) positions of
-    [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
-    (pos:_) -> do
-      let modifyRequest = MqlTradeRequest
-            { trReqAction      = TRADE_ACTION_SLTP
-            , trReqMagic       = 0
-            , trReqOrder       = 0
-            , trReqSymbol      = trPosSymbol pos
-            , trReqVolume      = DecimalNumber Nothing 0.0  -- Not needed for SLTP
-            , trReqPrice       = DecimalNumber Nothing 0.0  -- Not needed for SLTP
-            , trReqStoplimit   = DecimalNumber Nothing 0.0
-            , trReqSl          = DecimalNumber Nothing sl   -- New stop loss
-            , trReqTp          = DecimalNumber Nothing tp   -- New take profit
-            , trReqDeviation   = 0
-            , trReqType        = ORDER_TYPE_BUY  -- Doesn't matter for SLTP
-            , trReqTypeFilling = ORDER_FILLING_FOK
-            , trReqTypeTime    = ORDER_TIME_GTC
-            , trReqExpiration  = 0
-            , trReqComment     = "Modify SL/TP " ++ show ticket
-            , trReqPosition    = ticket  -- CRITICAL: Position to modify
-            , trReqPositionBy  = 0
-            }
+  positionsResult <- positionsGet
+  case positionsResult of
+    Left err -> return $ Left err
+    Right positions ->
+      case filter (\p -> trPosTicket p == ticket) positions of
+        [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+        (pos:_) -> do
+          let modifyRequest = MqlTradeRequest
+                { trReqAction      = TRADE_ACTION_SLTP
+                , trReqMagic       = 0
+                , trReqOrder       = 0
+                , trReqSymbol      = trPosSymbol pos
+                , trReqVolume      = DecimalNumber Nothing 0.0  -- Not needed for SLTP
+                , trReqPrice       = DecimalNumber Nothing 0.0  -- Not needed for SLTP
+                , trReqStoplimit   = DecimalNumber Nothing 0.0
+                , trReqSl          = DecimalNumber Nothing sl   -- New stop loss
+                , trReqTp          = DecimalNumber Nothing tp   -- New take profit
+                , trReqDeviation   = 0
+                , trReqType        = ORDER_TYPE_BUY  -- Doesn't matter for SLTP
+                , trReqTypeFilling = ORDER_FILLING_FOK
+                , trReqTypeTime    = ORDER_TIME_GTC
+                , trReqExpiration  = 0
+                , trReqComment     = "Modify SL/TP " ++ show ticket
+                , trReqPosition    = ticket  -- CRITICAL: Position to modify
+                , trReqPositionBy  = 0
+                }
 
-      result <- orderSendViaPython modifyRequest
-      return $ Right $ ordSendRetcode result == TRADE_RETCODE_DONE
+          result <- orderSendViaPython modifyRequest
+          return $ ((== TRADE_RETCODE_DONE) . ordSendRetcode) <$> result
 
 -- | Get active orders with the ability to filter by symbol or ticket.
 --
@@ -592,7 +645,7 @@ positionModifyViaPython ticket sl tp = do
 --
 ordersGet :: Maybe Symbol      -- ^ Optional symbol filter (e.g., Just "EURUSD")
           -> Maybe Ticket      -- ^ Optional ticket filter (e.g., Just 12345) - PythonBridge only
-          -> IO [TradeOrder]
+          -> IO (Either MT5Error [TradeOrder])
 ordersGet mInstr mTicket = do
   config <- getConfig
   case communicationChannel config of
@@ -601,50 +654,71 @@ ordersGet mInstr mTicket = do
     PythonBridge         -> ordersGetViaPython mInstr mTicket
 
 -- | Retrieve orders using file bridge (Note: ticket filter not supported by EA)
-ordersGetViaFile :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]
+ordersGetViaFile :: Maybe Symbol -> Maybe Ticket -> IO (Either MT5Error [TradeOrder])
 ordersGetViaFile mSymbol _mTicket = do
+  $(logInfo) $ "Fetching orders via FileBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mSymbol
+  $(logWarningText) "Note: FileBridge does not support ticket filtering"
   let req = mkOrdersGetRequest (fmap T.pack mSymbol)
   mResponse <- sendRequestViaFile "orders_get" req 5000
   case mResponse of
-    Nothing -> error "Orders get request timed out"
+    Nothing -> do
+      $(logWarningText) "Orders get request timed out after 5000ms"
+      return $ Left $ TimeoutError "orders_get" 5000
     Just response -> do
       let mOrders = decode (encode $ responseData response) :: Maybe OrdersGetResponse
       case mOrders of
-        Nothing -> error "Failed to parse orders response"
-        Just resp -> return $ map convertOrderInfoResponse (ordersGetOrders resp)
+        Nothing -> do
+          $(logWarningText) "Failed to parse orders response"
+          return $ Left $ ParseError "OrdersGetResponse" (T.pack $ show response)
+        Just resp -> do
+          let orders = map convertOrderInfoResponse (ordersGetOrders resp)
+          $(logDebug) $ "Successfully parsed " ++ show (length orders) ++ " orders"
+          return $ Right orders
 
 -- | Retrieve orders using Python bridge (original implementation)
-ordersGetViaPython :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]
+ordersGetViaPython :: Maybe Symbol -> Maybe Ticket -> IO (Either MT5Error [TradeOrder])
 ordersGetViaPython mInstr mTicket = do
-  case (mInstr, mTicket) of
-    (Just instr, Nothing) -> do
-      send "ORDERS_GET_SYMBOL"
-      send instr
-    (_, Just ticket) -> do
-      send "ORDERS_GET_TICKET"
-      send (show ticket)
-    _ -> do
-      send "ORDERS_GET"
-  len <- unpickle' "Int" <$> receive
-  replicateM len
-        $ TradeOrder
-            <$> (unpickle' "Int" <$> receive)
-            <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
-            <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
-            <*> (unpickle' "Int" <$> receive)
-            <*> (toEnum . unpickle' "Int" <$> receive)
-            <*> (unpickle' "Integer" <$> receive)
-            <*> (unpickle' "Int" <$> receive)
-            <*> (toEnum . unpickle' "Int" <$> receive)
-            <*> (unpickle' "Int" <$> receive)
-            <*> (either (const (DecimalNumber Nothing 0.0)) id . mkDecimalNumberFromDouble . unpickle' "Double" <$> receive)
-            <*> (unpickle' "Double" <$> receive)
-            <*> (unpickle' "Double" <$> receive)
-            <*> (unpickle' "Double" <$> receive)
-            <*> (unpickle' "Double" <$> receive)
-            <*> (unpickle' "String" <$> receive)
-            <*> (unpickle' "String" <$> receive)
-            <*> (unpickle' "String" <$> receive)
+  $(logInfo) $ "Fetching orders via PythonBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mInstr
+
+  -- Wrap in try block to catch any exceptions (Option B approach)
+  result <- try $ do
+    case (mInstr, mTicket) of
+      (Just instr, Nothing) -> do
+        send "ORDERS_GET_SYMBOL"
+        send instr
+      (_, Just ticket) -> do
+        send "ORDERS_GET_TICKET"
+        send (show ticket)
+      _ -> do
+        send "ORDERS_GET"
+    len <- unpickle' "Int" <$> receive
+    replicateM len
+          $ TradeOrder
+              <$> (unpickle' "Int" <$> receive)
+              <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
+              <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+              <*> (unpickle' "Int" <$> receive)
+              <*> (toEnum . unpickle' "Int" <$> receive)
+              <*> (unpickle' "Integer" <$> receive)
+              <*> (unpickle' "Int" <$> receive)
+              <*> (toEnum . unpickle' "Int" <$> receive)
+              <*> (unpickle' "Int" <$> receive)
+              <*> (either (const (DecimalNumber Nothing 0.0)) id . mkDecimalNumberFromDouble . unpickle' "Double" <$> receive)
+              <*> (unpickle' "Double" <$> receive)
+              <*> (unpickle' "Double" <$> receive)
+              <*> (unpickle' "Double" <$> receive)
+              <*> (unpickle' "Double" <$> receive)
+              <*> (unpickle' "String" <$> receive)
+              <*> (unpickle' "String" <$> receive)
+              <*> (unpickle' "String" <$> receive)
+
+  case result of
+    Left (e :: SomeException) -> do
+      $(logWarning) $ "Python bridge error: " ++ show e
+      return $ Left $ PythonProcessError (T.pack $ show e)
+    Right orders -> do
+      $(logDebug) $ "Successfully fetched " ++ show (length orders) ++ " orders via Python"
+      return $ Right orders
 
 -- | Convert OrderInfoResponse (10 fields) to TradeOrder (17 fields)
 convertOrderInfoResponse :: OrderInfoResponse -> TradeOrder
@@ -702,7 +776,7 @@ symbolsGet mGroup =
 -- - PythonBridge: Uses Python-based communication (COMPLETE - all 104 fields, REQUIRED for production)
 --
 symbolInfo :: Symbol            -- ^ Symbol name to query (e.g., "EURUSD")
-           -> IO SymbolInfo
+           -> IO (Either MT5Error SymbolInfo)
 symbolInfo symbol = do
   config <- getConfig
   case communicationChannel config of
@@ -711,27 +785,48 @@ symbolInfo symbol = do
     PythonBridge         -> symbolInfoViaPython symbol
 
 -- | Retrieve symbol information using file bridge
-symbolInfoViaFile :: Symbol -> IO SymbolInfo
+symbolInfoViaFile :: Symbol -> IO (Either MT5Error SymbolInfo)
 symbolInfoViaFile symbol = do
+  $(logInfo) $ "Fetching symbol info via FileBridge for: " ++ symbol
   let reqResult = mkSymbolInfoRequest (T.pack symbol)
   case reqResult of
-    Left err -> error $ "Invalid symbol request: " ++ show err
+    Left err -> do
+      $(logWarning) $ "Invalid symbol request: " ++ show err
+      return $ Left $ ValidationError (T.pack $ "Invalid symbol request: " ++ show err)
     Right req -> do
       mResponse <- sendRequestViaFile "symbol_info" req 5000
       case mResponse of
-        Nothing -> error $ "Symbol info request timed out for symbol: " ++ symbol
+        Nothing -> do
+          $(logWarning) $ "Symbol info request timed out for symbol: " ++ symbol
+          return $ Left $ TimeoutError (T.pack $ "symbol_info:" ++ symbol) 5000
         Just response -> do
           let mSymbolInfo = decode (encode $ responseData response) :: Maybe SymbolInfoResponse
           case mSymbolInfo of
-            Nothing -> error $ "Failed to parse symbol info response for: " ++ symbol
-            Just resp -> return $ convertSymbolInfoResponse resp
+            Nothing -> do
+              $(logWarning) $ "Failed to parse symbol info response for: " ++ symbol
+              return $ Left $ ParseError "SymbolInfoResponse" (T.pack $ show response)
+            Just resp -> do
+              $(logDebug) $ "Successfully parsed symbol info for: " ++ symbol
+              return $ Right $ convertSymbolInfoResponse resp
 
 -- | Retrieve symbol information using Python bridge (original implementation)
-symbolInfoViaPython :: Symbol -> IO SymbolInfo
+symbolInfoViaPython :: Symbol -> IO (Either MT5Error SymbolInfo)
 symbolInfoViaPython symbol = do
-  send "SYMBOL_INFO"
-  send symbol
-  readSymbolInfo
+  $(logInfo) $ "Fetching symbol info via PythonBridge for: " ++ symbol
+
+  -- Wrap in try block to catch any exceptions (Option B approach)
+  result <- try $ do
+    send "SYMBOL_INFO"
+    send symbol
+    readSymbolInfo
+
+  case result of
+    Left (e :: SomeException) -> do
+      $(logWarning) $ "Python bridge error: " ++ show e
+      return $ Left $ PythonProcessError (T.pack $ show e)
+    Right info -> do
+      $(logDebug) $ "Successfully fetched symbol info via Python for: " ++ symbol
+      return $ Right info
 
 -- | Convert SymbolInfoResponse (7 fields) to SymbolInfo (98+ fields with defaults)
 convertSymbolInfoResponse :: SymbolInfoResponse -> SymbolInfo
@@ -1028,7 +1123,7 @@ sendMqlTradeRequest MqlTradeRequest {..} = do
 --
 -- Corresponds to MetaTrader5.order_send().
 orderSend :: MqlTradeRequest   -- ^ Trade request parameters to execute
-          -> IO OrderSendResult
+          -> IO (Either MT5Error OrderSendResult)
 orderSend request = do
   config <- getConfig
   case positionManagementChannel config of
@@ -1042,32 +1137,47 @@ orderSend request = do
 -- - Position close: When position > 0, action = DEAL → routes to positionClose/positionClosePartial
 -- - Position modify: When position > 0, action = SLTP → routes to positionModify
 -- - Other cases: Uses generic OrderSend handler
-orderSendViaFile :: MqlTradeRequest -> IO OrderSendResult
+orderSendViaFile :: MqlTradeRequest -> IO (Either MT5Error OrderSendResult)
 orderSendViaFile mqlReq = do
   -- Log incoming request for debugging (full details via show)
   $(logInfo) $ "[orderSendViaFile] Incoming MqlTradeRequest: " ++ show mqlReq
-  
+
   -- Check if this should be routed to a specialized handler
   case (trReqAction mqlReq, trReqPosition mqlReq) of
     -- Position close: action=DEAL + position > 0
     (TRADE_ACTION_DEAL, pos) | pos > 0 -> do
       -- Need to determine if full or partial close by getting position info
-      positions <- positionsGet
-      -- Find the position to check its volume
-      let mPosition = find (\p -> trPosTicket p == pos) positions
-      case mPosition of
-        Just position -> do
-          let posVolume = fromDecimalNumber $ trPosVolume position
-              reqVolume = fromDecimalNumber $ trReqVolume mqlReq
-          -- Route to appropriate close function
-          closeResult <- if abs (posVolume - reqVolume) < 0.0001  -- Close tolerance
-            then positionCloseViaFile pos
-            else positionClosePartialViaFile pos reqVolume
-          -- Convert result to OrderSendResult
-          return $ convertPositionCloseResult closeResult
-        Nothing ->
-          -- Position not found
-          return $ OrderSendResult TRADE_RETCODE_INVALID 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Position not found: " ++ show pos) 0 0
+      positionsResult <- positionsGet
+      case positionsResult of
+        Left err -> return $ Right OrderSendResult
+          { ordSendRetcode      = TRADE_RETCODE_INVALID_FILL  -- Generic error
+          , ordSendDeal         = 0
+          , ordSendOrder        = 0
+          , ordSendVolume       = 0.0
+          , ordSendPrice        = 0.0
+          , ordSendBid          = 0.0
+          , ordSendAsk          = 0.0
+          , ordSendComment      = "Failed to get positions: " ++ show err
+          , ordSendRequest_id   = 0
+          , ordSendRetcode_external = 0
+          }
+        Right positions -> do
+          -- Find the position to check its volume
+          let mPosition = find (\p -> trPosTicket p == pos) positions
+          case mPosition of
+            Just position -> do
+              let posVolume = fromDecimalNumber $ trPosVolume position
+                  reqVolume = fromDecimalNumber $ trReqVolume mqlReq
+              -- Route to appropriate close function
+              closeResult <- if abs (posVolume - reqVolume) < 0.0001  -- Close tolerance
+                             then positionCloseViaFile pos
+                             else positionClosePartialViaFile pos reqVolume
+
+              -- Convert result to OrderSendResult
+              return $ convertPositionCloseResult <$> closeResult
+            Nothing ->
+              -- Position not found
+              return $ Right $ OrderSendResult TRADE_RETCODE_INVALID 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Position not found: " ++ show pos) 0 0
 
     -- Position modify: action=SLTP + position > 0
     (TRADE_ACTION_SLTP, pos) | pos > 0 -> do
@@ -1075,7 +1185,7 @@ orderSendViaFile mqlReq = do
           tp = fromDecimalNumber $ trReqTp mqlReq
       modifyResult <- positionModifyViaFile pos sl tp
       -- Convert result to OrderSendResult
-      return $ convertPositionModifyResult modifyResult
+      return $ convertPositionModifyResult <$> modifyResult
 
     -- All other cases: use generic OrderSend handler
     _ -> do
@@ -1106,50 +1216,51 @@ orderSendViaFile mqlReq = do
                 Req.InvalidSymbol _ -> TRADE_RETCODE_INVALID
                 _                   -> TRADE_RETCODE_INVALID
               errMsg = "Invalid order send request: " ++ show err
-          in return $ OrderSendResult retcode 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 errMsg 0 0
+          in return $ Right $ OrderSendResult retcode 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 errMsg 0 0
         Right req -> do
           mResponse <- sendRequestViaFile "order_send" req 5000
           case mResponse of
             Nothing ->
               -- Timeout: return error result with TRADE_RETCODE_TIMEOUT
-              return $ OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Order send request timed out" 0 0
+              return $ Right $ OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Order send request timed out" 0 0
             Just response -> do
               let mOrderSend = decode (encode $ responseData response) :: Maybe OrderSendResponse
               case mOrderSend of
                 Nothing ->
                   -- Parse failure: return error result with TRADE_RETCODE_ERROR
-                  return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Failed to parse order send response" 0 0
-                Just resp -> return $ convertOrderSendResponse resp
+                  return $ Right $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Failed to parse order send response" 0 0
+                Just resp -> return $ Right $ convertOrderSendResponse resp
 
 -- | Convert position close result to OrderSendResult
-convertPositionCloseResult :: Either MT5Error Bool -> OrderSendResult
-convertPositionCloseResult (Right True) =
+convertPositionCloseResult :: Bool -> OrderSendResult
+convertPositionCloseResult True =
   OrderSendResult TRADE_RETCODE_DONE 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Position closed successfully" 0 0
-convertPositionCloseResult (Right False) =
+convertPositionCloseResult False =
   OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Position close failed" 0 0
-convertPositionCloseResult (Left (TimeoutError action timeout)) =
-  OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (T.unpack action ++ " timed out after " ++ show timeout ++ "ms") 0 0
-convertPositionCloseResult (Left err) =
-  OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
+-- convertPositionCloseResult (Left (TimeoutError action timeout)) =
+--   OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (T.unpack action ++ " timed out after " ++ show timeout ++ "ms") 0 0
+-- convertPositionCloseResult (Left err) =
+--   OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
 
 -- | Convert position modify result to OrderSendResult
-convertPositionModifyResult :: Either MT5Error Bool -> OrderSendResult
-convertPositionModifyResult (Right True) =
+convertPositionModifyResult :: Bool -> OrderSendResult
+convertPositionModifyResult True =
   OrderSendResult TRADE_RETCODE_DONE 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Position modified successfully" 0 0
-convertPositionModifyResult (Right False) =
+convertPositionModifyResult False =
   OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Position modify failed" 0 0
-convertPositionModifyResult (Left (TimeoutError action timeout)) =
-  OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (T.unpack action ++ " timed out after " ++ show timeout ++ "ms") 0 0
-convertPositionModifyResult (Left err) =
-  OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
+-- convertPositionModifyResult (Left (TimeoutError action timeout)) =
+--   OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (T.unpack action ++ " timed out after " ++ show timeout ++ "ms") 0 0
+-- convertPositionModifyResult (Left err) =
+--   OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
 
 
 -- | Send order using Python bridge (original implementation)
-orderSendViaPython :: MqlTradeRequest -> IO OrderSendResult
+orderSendViaPython :: MqlTradeRequest -> IO (Either MT5Error OrderSendResult)
 orderSendViaPython request = do
   send "ORDER_SEND"
   sendMqlTradeRequest request
-  readOrderSendResult
+  res <- readOrderSendResult
+  return $ Right res
 
 -- | Convert OrderSendResponse (7 fields) to OrderSendResult (10 fields)
 convertOrderSendResponse :: OrderSendResponse -> OrderSendResult
@@ -1247,10 +1358,26 @@ cancelOrderPOST orderTicket = do
 cancelAllOrdersPOST :: IO [OrderSendResult]
 cancelAllOrdersPOST = do
   -- Phase 1: Get all pending orders
-  orders <- ordersGet Nothing Nothing
+  ordersResult <- ordersGet Nothing Nothing
 
-  -- Phase 2: Cancel each order individually
-  mapM cancelSingleOrder orders
+  case ordersResult of
+    Left err -> do
+      -- Return a failed result if we can't get orders
+      return [OrderSendResult
+        { ordSendRetcode      = TRADE_RETCODE_INVALID_FILL  -- Generic error
+        , ordSendDeal         = 0
+        , ordSendOrder        = 0
+        , ordSendVolume       = 0.0
+        , ordSendPrice        = 0.0
+        , ordSendBid          = 0.0
+        , ordSendAsk          = 0.0
+        , ordSendComment      = "Failed to get orders: " ++ show err
+        , ordSendRequest_id   = 0
+        , ordSendRetcode_external = 0
+        }]
+    Right orders -> do
+      -- Phase 2: Cancel each order individually
+      mapM cancelSingleOrder orders
   where
     cancelSingleOrder :: TradeOrder -> IO OrderSendResult
     cancelSingleOrder order = cancelOrderPOST (tradeOrderTicket order)

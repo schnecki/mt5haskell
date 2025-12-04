@@ -1,6 +1,6 @@
-{-# LANGUAGE DeriveGeneric      #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE DerivingStrategies  #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Comprehensive error handling for MT5 operations.
@@ -29,28 +29,28 @@ module MT5.Error
     MT5Error (..)
   , ErrorCategory (..)
   , ErrorSeverity (..)
-    
+
     -- * MT5 Error Code Mapping
   , MT5ErrorCode (..)
   , fromMT5ErrorCode
   , toMT5ErrorCode
   , errorCodeDescription
-    
+
     -- * Error Handling
   , handleMT5Error
   , retryWithBackoff
   , withTimeout
   , safeExecute
-    
+
     -- * Retry Strategies
   , RetryConfig (..)
   , defaultRetryConfig
   , RetryResult (..)
-    
+
     -- * Error Recovery
   , RecoveryStrategy (..)
   , applyRecovery
-    
+
     -- * Utilities
   , isFatalError
   , isRetryableError
@@ -75,13 +75,13 @@ data MT5Error
   = -- Connection Errors
     ConnectionError Text  -- ^ MT5 not running, Wine not found, initialization failed
   | LoginError Text Int   -- ^ Login failed (error message, error code)
-    
-    -- Communication Errors  
+
+    -- Communication Errors
   | TimeoutError Text Int -- ^ Operation timed out (operation name, milliseconds waited)
   | FileAccessError Text  -- ^ File I/O error (EA bridge files)
   | PythonProcessError Text -- ^ Python process communication error
   | ChannelError Text     -- ^ Communication channel error (neither Python nor File works)
-    
+
     -- Broker Errors (MT5 Trade Retcodes)
   | BrokerError TradeRetcode Text -- ^ MT5 trade retcode with description
   | InsufficientFunds Double Double -- ^ Not enough money (required, available)
@@ -89,18 +89,18 @@ data MT5Error
   | InvalidPrice Double Text  -- ^ Invalid price (price, reason)
   | TradingDisabled Text  -- ^ Trading not allowed (reason)
   | MarketClosed Text     -- ^ Market is closed (symbol)
-    
+
     -- Data Errors
   | ParseError Text Text  -- ^ Failed to parse response (field name, raw data)
   | InvalidResponse Text  -- ^ Response structure invalid (details)
   | MissingField Text     -- ^ Required field missing (field name)
   | DataLossWarning Text Int Int -- ^ Data loss from EA (function, fields received, fields expected)
-    
+
     -- Validation Errors
   | ValidationError Text  -- ^ Business logic validation failed
   | InvalidParameter Text Text -- ^ Invalid parameter (parameter name, reason)
   | UnsupportedOperation Text -- ^ Operation not supported (operation name)
-    
+
     -- System Errors
   | UnknownError Text     -- ^ Unexpected error
   | InternalError Text    -- ^ Internal library error
@@ -150,11 +150,11 @@ data MT5ErrorCode
 
 -- | Convert integer error code to MT5ErrorCode.
 fromMT5ErrorCode :: Int -> MT5ErrorCode
-fromMT5ErrorCode 1    = MT5_SUCCESS
-fromMT5ErrorCode (-1) = MT5_FAIL
-fromMT5ErrorCode (-2) = MT5_NOT_INITIALIZED
-fromMT5ErrorCode (-10) = MT5_INVALID_PARAMS
-fromMT5ErrorCode (-20) = MT5_NO_MEMORY
+fromMT5ErrorCode 1      = MT5_SUCCESS
+fromMT5ErrorCode (-1)   = MT5_FAIL
+fromMT5ErrorCode (-2)   = MT5_NOT_INITIALIZED
+fromMT5ErrorCode (-10)  = MT5_INVALID_PARAMS
+fromMT5ErrorCode (-20)  = MT5_NO_MEMORY
 fromMT5ErrorCode (-100) = MT5_FILE_NOT_FOUND
 fromMT5ErrorCode (-101) = MT5_FILE_CANNOT_OPEN
 fromMT5ErrorCode (-102) = MT5_FILE_WRITE_ERROR
@@ -163,24 +163,24 @@ fromMT5ErrorCode (-300) = MT5_UNAUTHORIZED
 fromMT5ErrorCode (-400) = MT5_TRADE_DISABLED
 fromMT5ErrorCode (-401) = MT5_MARKET_CLOSED
 fromMT5ErrorCode (-500) = MT5_NO_CONNECTION
-fromMT5ErrorCode code  = MT5_UNKNOWN_ERROR code
+fromMT5ErrorCode code   = MT5_UNKNOWN_ERROR code
 
 
 -- | Convert MT5ErrorCode to integer.
 toMT5ErrorCode :: MT5ErrorCode -> Int
-toMT5ErrorCode MT5_SUCCESS = 1
-toMT5ErrorCode MT5_FAIL = -1
-toMT5ErrorCode MT5_NOT_INITIALIZED = -2
-toMT5ErrorCode MT5_INVALID_PARAMS = -10
-toMT5ErrorCode MT5_NO_MEMORY = -20
-toMT5ErrorCode MT5_FILE_NOT_FOUND = -100
-toMT5ErrorCode MT5_FILE_CANNOT_OPEN = -101
-toMT5ErrorCode MT5_FILE_WRITE_ERROR = -102
-toMT5ErrorCode MT5_TIMEOUT = -200
-toMT5ErrorCode MT5_UNAUTHORIZED = -300
-toMT5ErrorCode MT5_TRADE_DISABLED = -400
-toMT5ErrorCode MT5_MARKET_CLOSED = -401
-toMT5ErrorCode MT5_NO_CONNECTION = -500
+toMT5ErrorCode MT5_SUCCESS              = 1
+toMT5ErrorCode MT5_FAIL                 = -1
+toMT5ErrorCode MT5_NOT_INITIALIZED      = -2
+toMT5ErrorCode MT5_INVALID_PARAMS       = -10
+toMT5ErrorCode MT5_NO_MEMORY            = -20
+toMT5ErrorCode MT5_FILE_NOT_FOUND       = -100
+toMT5ErrorCode MT5_FILE_CANNOT_OPEN     = -101
+toMT5ErrorCode MT5_FILE_WRITE_ERROR     = -102
+toMT5ErrorCode MT5_TIMEOUT              = -200
+toMT5ErrorCode MT5_UNAUTHORIZED         = -300
+toMT5ErrorCode MT5_TRADE_DISABLED       = -400
+toMT5ErrorCode MT5_MARKET_CLOSED        = -401
+toMT5ErrorCode MT5_NO_CONNECTION        = -500
 toMT5ErrorCode (MT5_UNKNOWN_ERROR code) = code
 
 
@@ -256,53 +256,53 @@ data RecoveryStrategy
 
 -- | Classify error into category.
 getErrorCategory :: MT5Error -> ErrorCategory
-getErrorCategory (ConnectionError _) = CategoryConnection
-getErrorCategory (LoginError _ _) = CategoryConnection
-getErrorCategory (TimeoutError _ _) = CategoryCommunication
-getErrorCategory (FileAccessError _) = CategoryCommunication
-getErrorCategory (PythonProcessError _) = CategoryCommunication
-getErrorCategory (ChannelError _) = CategoryCommunication
-getErrorCategory (BrokerError _ _) = CategoryBroker
-getErrorCategory (InsufficientFunds _ _) = CategoryBroker
-getErrorCategory (InvalidVolume _ _) = CategoryBroker
-getErrorCategory (InvalidPrice _ _) = CategoryBroker
-getErrorCategory (TradingDisabled _) = CategoryBroker
-getErrorCategory (MarketClosed _) = CategoryBroker
-getErrorCategory (ParseError _ _) = CategoryData
-getErrorCategory (InvalidResponse _) = CategoryData
-getErrorCategory (MissingField _) = CategoryData
-getErrorCategory (DataLossWarning _ _ _) = CategoryData
-getErrorCategory (ValidationError _) = CategoryValidation
-getErrorCategory (InvalidParameter _ _) = CategoryValidation
+getErrorCategory (ConnectionError _)      = CategoryConnection
+getErrorCategory (LoginError _ _)         = CategoryConnection
+getErrorCategory (TimeoutError _ _)       = CategoryCommunication
+getErrorCategory (FileAccessError _)      = CategoryCommunication
+getErrorCategory (PythonProcessError _)   = CategoryCommunication
+getErrorCategory (ChannelError _)         = CategoryCommunication
+getErrorCategory (BrokerError _ _)        = CategoryBroker
+getErrorCategory (InsufficientFunds _ _)  = CategoryBroker
+getErrorCategory (InvalidVolume _ _)      = CategoryBroker
+getErrorCategory (InvalidPrice _ _)       = CategoryBroker
+getErrorCategory (TradingDisabled _)      = CategoryBroker
+getErrorCategory (MarketClosed _)         = CategoryBroker
+getErrorCategory (ParseError _ _)         = CategoryData
+getErrorCategory (InvalidResponse _)      = CategoryData
+getErrorCategory (MissingField _)         = CategoryData
+getErrorCategory (DataLossWarning _ _ _)  = CategoryData
+getErrorCategory (ValidationError _)      = CategoryValidation
+getErrorCategory (InvalidParameter _ _)   = CategoryValidation
 getErrorCategory (UnsupportedOperation _) = CategoryValidation
-getErrorCategory (UnknownError _) = CategorySystem
-getErrorCategory (InternalError _) = CategorySystem
+getErrorCategory (UnknownError _)         = CategorySystem
+getErrorCategory (InternalError _)        = CategorySystem
 
 
 -- | Determine error severity.
 getErrorSeverity :: MT5Error -> ErrorSeverity
-getErrorSeverity (ConnectionError _) = SeverityCritical
-getErrorSeverity (LoginError _ _) = SeverityCritical
-getErrorSeverity (TimeoutError _ _) = SeverityMedium
-getErrorSeverity (FileAccessError _) = SeverityHigh
-getErrorSeverity (PythonProcessError _) = SeverityHigh
-getErrorSeverity (ChannelError _) = SeverityCritical
+getErrorSeverity (ConnectionError _)                = SeverityCritical
+getErrorSeverity (LoginError _ _)                   = SeverityCritical
+getErrorSeverity (TimeoutError _ _)                 = SeverityMedium
+getErrorSeverity (FileAccessError _)                = SeverityHigh
+getErrorSeverity (PythonProcessError _)             = SeverityHigh
+getErrorSeverity (ChannelError _)                   = SeverityCritical
 getErrorSeverity (BrokerError TRADE_RETCODE_DONE _) = SeverityLow
-getErrorSeverity (BrokerError _ _) = SeverityHigh
-getErrorSeverity (InsufficientFunds _ _) = SeverityHigh
-getErrorSeverity (InvalidVolume _ _) = SeverityMedium
-getErrorSeverity (InvalidPrice _ _) = SeverityMedium
-getErrorSeverity (TradingDisabled _) = SeverityCritical
-getErrorSeverity (MarketClosed _) = SeverityMedium
-getErrorSeverity (ParseError _ _) = SeverityHigh
-getErrorSeverity (InvalidResponse _) = SeverityHigh
-getErrorSeverity (MissingField _) = SeverityMedium
-getErrorSeverity (DataLossWarning _ _ _) = SeverityLow
-getErrorSeverity (ValidationError _) = SeverityMedium
-getErrorSeverity (InvalidParameter _ _) = SeverityMedium
-getErrorSeverity (UnsupportedOperation _) = SeverityHigh
-getErrorSeverity (UnknownError _) = SeverityCritical
-getErrorSeverity (InternalError _) = SeverityCritical
+getErrorSeverity (BrokerError _ _)                  = SeverityHigh
+getErrorSeverity (InsufficientFunds _ _)            = SeverityHigh
+getErrorSeverity (InvalidVolume _ _)                = SeverityMedium
+getErrorSeverity (InvalidPrice _ _)                 = SeverityMedium
+getErrorSeverity (TradingDisabled _)                = SeverityCritical
+getErrorSeverity (MarketClosed _)                   = SeverityMedium
+getErrorSeverity (ParseError _ _)                   = SeverityHigh
+getErrorSeverity (InvalidResponse _)                = SeverityHigh
+getErrorSeverity (MissingField _)                   = SeverityMedium
+getErrorSeverity (DataLossWarning _ _ _)            = SeverityLow
+getErrorSeverity (ValidationError _)                = SeverityMedium
+getErrorSeverity (InvalidParameter _ _)             = SeverityMedium
+getErrorSeverity (UnsupportedOperation _)           = SeverityHigh
+getErrorSeverity (UnknownError _)                   = SeverityCritical
+getErrorSeverity (InternalError _)                  = SeverityCritical
 
 
 -- | Check if error is fatal (cannot be recovered).
@@ -312,16 +312,16 @@ isFatalError err = getErrorSeverity err == SeverityCritical
 
 -- | Check if error is retryable (transient failure).
 isRetryableError :: MT5Error -> Bool
-isRetryableError (TimeoutError _ _) = True
-isRetryableError (FileAccessError _) = True
-isRetryableError (PythonProcessError _) = True
-isRetryableError (BrokerError TRADE_RETCODE_TIMEOUT _) = True
-isRetryableError (BrokerError TRADE_RETCODE_ERROR _) = True
-isRetryableError (BrokerError TRADE_RETCODE_LOCKED _) = True
+isRetryableError (TimeoutError _ _)                              = True
+isRetryableError (FileAccessError _)                             = True
+isRetryableError (PythonProcessError _)                          = True
+isRetryableError (BrokerError TRADE_RETCODE_TIMEOUT _)           = True
+isRetryableError (BrokerError TRADE_RETCODE_ERROR _)             = True
+isRetryableError (BrokerError TRADE_RETCODE_LOCKED _)            = True
 isRetryableError (BrokerError TRADE_RETCODE_TOO_MANY_REQUESTS _) = True
-isRetryableError (BrokerError TRADE_RETCODE_REQUOTE _) = True
-isRetryableError (BrokerError TRADE_RETCODE_CONNECTION _) = True
-isRetryableError _ = False
+isRetryableError (BrokerError TRADE_RETCODE_REQUOTE _)           = True
+isRetryableError (BrokerError TRADE_RETCODE_CONNECTION _)        = True
+isRetryableError _                                               = False
 
 
 -- | Execute operation with error handling wrapper.
@@ -331,7 +331,7 @@ handleMT5Error :: IO a -> IO (Either MT5Error a)
 handleMT5Error action = do
   result <- try action
   case result of
-    Right val -> return $ Right val
+    Right val                 -> return $ Right val
     Left (e :: SomeException) -> return $ Left $ UnknownError (T.pack $ show e)
 
 
@@ -348,8 +348,8 @@ withTimeout timeoutMs opName action = do
   -- Converts milliseconds to microseconds (* 1000)
   result <- timeout (timeoutMs * 1000) $ handleMT5Error action
   case result of
-    Nothing -> return $ Left $ TimeoutError opName timeoutMs
-    Just (Left err) -> return $ Left err
+    Nothing          -> return $ Left $ TimeoutError opName timeoutMs
+    Just (Left err)  -> return $ Left err
     Just (Right val) -> return $ Right val
 
 
@@ -363,20 +363,20 @@ retryWithBackoff config action = go 1 (retryInitialDelay config)
       | attempt > retryMaxAttempts config = do
           result <- action
           case result of
-            Left err -> return $ RetryFailed err attempt
+            Left err  -> return $ RetryFailed err attempt
             Right val -> return $ RetrySuccess val attempt
-            
+
       | otherwise = do
           result <- action
           case result of
             Right val -> return $ RetrySuccess val attempt
-            
+
             Left err ->
               if retryableErrors config err
                 then do
                   -- Wait with exponential backoff
                   threadDelay (currentDelay * 1000) -- Convert ms to microseconds
-                  let nextDelay = min (retryMaxDelay config) 
+                  let nextDelay = min (retryMaxDelay config)
                                       (round $ fromIntegral currentDelay * retryBackoffFactor config)
                   go (attempt + 1) nextDelay
                 else
@@ -389,16 +389,16 @@ applyRecovery (RetryOperation config) _ action = do
   result <- retryWithBackoff config action
   case result of
     RetrySuccess val _ -> return $ Right val
-    RetryFailed err _ -> return $ Left err
-    RetryGaveUp err _ -> return $ Left err
-    
+    RetryFailed err _  -> return $ Left err
+    RetryGaveUp err _  -> return $ Left err
+
 applyRecovery PropagateError err _ = return $ Left err
 
 applyRecovery LogAndContinue err action = do
-  -- Simple logging to stdout 
+  -- Simple logging to stdout
   putStrLn $ "Warning: " ++ show err
   action
-  
+
 applyRecovery _ err _ = return $ Left err
 
 
@@ -420,5 +420,5 @@ safeExecute config timeoutMs opName action = do
   result <- retryWithBackoff config $ withTimeout timeoutMs opName action
   case result of
     RetrySuccess val _ -> return $ Right val
-    RetryFailed err _ -> return $ Left err
-    RetryGaveUp err _ -> return $ Left err
+    RetryFailed err _  -> return $ Left err
+    RetryGaveUp err _  -> return $ Left err
