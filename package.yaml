@@ -36,6 +36,8 @@ dependencies:
 - temporary
 - aeson        # JSON encoding/decoding for file communication
 - unix         # For atomic file operations (renameFile is POSIX)
+- mtl          # For ExceptT monad transformer
+- transformers # For monad transformer support
 
 ghc-options:
 - -Wall

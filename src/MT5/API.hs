@@ -6,31 +6,55 @@
 {-# LANGUAGE TemplateHaskell     #-}
 
 module MT5.API
-  ( SymbolGroup (..),
+  ( -- * Symbol Groups
+    SymbolGroup (..),
+    -- * Authentication
     initialize
   , loginAccount
+    -- * Account Information
   , accountInfo
+    -- * Position Management
   , positionsGet
   , positionClose
   , positionClosePartial
   , positionModify
-  , symbolInfo
-  , symbolsGet
-  , symbolSelect
+    -- * Order Management
+  , ordersGet
   , cancelOrderPOST
   , cancelAllOrdersPOST
   , orderCheck
   , orderSend
-  , ordersGet
+    -- * Symbol Information
+  , symbolInfo
+  , symbolsGet
+  , symbolSelect
+    -- * Market Data
   , currentPriceGET
   , getCandleDataRange
   , getCandleDataFrom
   , getCandleDataRecent
+    -- * ExceptT Helper Functions
+  , liftMaybe
+  , eitherToExceptT
+  , maybeToExceptT
+    -- * Compatibility Wrappers (ExceptT → Either)
+  , positionsGetEither
+  , ordersGetEither
+  , orderSendEither
+  , accountInfoEither
+  , symbolInfoEither
+  , positionCloseEither
+  , positionClosePartialEither
+  , positionModifyEither
+  , runWithDefault
+  , runWithLogging
   ) where
 
 import           Control.DeepSeq
 import           Control.Exception           (SomeException, try)
 import           Control.Monad               (replicateM)
+import           Control.Monad.Except        (ExceptT, runExceptT, throwError)
+import           Control.Monad.IO.Class      (liftIO)
 import           Data.Aeson                  (Value, decode, encode)
 import qualified Data.ByteString.Lazy        as BSL
 import           Data.List                   (filter, find, isPrefixOf)
@@ -109,6 +133,145 @@ import           MT5.Util                    (mscToUTCTime, secondsToUTCTime)
 type Symbol = String
 type Ticket = Integer
 
+-- ==============================================================================
+-- EXCEPTT HELPER FUNCTIONS
+-- ==============================================================================
+
+-- | Convert 'Maybe' to 'ExceptT' with a custom error.
+--
+-- Use this helper when you have a 'Maybe' value that could fail and you want
+-- to convert it to an 'ExceptT' computation with a specific error.
+--
+-- ==== __Examples__
+--
+-- >>> liftMaybe (ParseError "Response" "invalid json") (Just [1,2,3])
+-- ExceptT (Right [1,2,3])
+--
+-- >>> liftMaybe (TimeoutError "operation" 5000) Nothing
+-- ExceptT (Left (TimeoutError "operation" 5000))
+--
+-- @since 0.2.0.0
+liftMaybe :: MT5Error -> Maybe a -> ExceptT MT5Error IO a
+liftMaybe err Nothing  = throwError err
+liftMaybe _ (Just x)   = return x
+
+-- | Convert 'Either' to 'ExceptT'.
+--
+-- Use this helper to lift an 'Either' value into the 'ExceptT' monad transformer.
+--
+-- ==== __Examples__
+--
+-- >>> eitherToExceptT (Right 42)
+-- ExceptT (Right 42)
+--
+-- >>> eitherToExceptT (Left (ParseError "field" "message"))
+-- ExceptT (Left (ParseError "field" "message"))
+--
+-- @since 0.2.0.0
+eitherToExceptT :: Either MT5Error a -> ExceptT MT5Error IO a
+eitherToExceptT (Left err) = throwError err
+eitherToExceptT (Right x)  = return x
+
+-- | Convert 'Maybe' to 'ExceptT' with a custom error (alias for 'liftMaybe').
+--
+-- @since 0.2.0.0
+maybeToExceptT :: MT5Error -> Maybe a -> ExceptT MT5Error IO a
+maybeToExceptT = liftMaybe
+
+-- ==============================================================================
+-- COMPATIBILITY WRAPPERS (ExceptT → Either)
+-- ==============================================================================
+
+-- | Run 'ExceptT' computation and return 'IO (Either MT5Error a)' for backward compatibility.
+--
+-- Use this to convert ExceptT computations to Either style at application boundaries.
+--
+-- ==== __Examples__
+--
+-- >>> positions <- positionsGetEither
+-- >>> case positions of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right ps -> print ps
+--
+-- @since 0.2.0.0
+positionsGetEither :: IO (Either MT5Error [TradePosition])
+positionsGetEither = runExceptT positionsGet
+
+-- | Run ordersGet as 'IO (Either MT5Error [TradeOrder])' for backward compatibility.
+--
+-- @since 0.2.0.0
+ordersGetEither :: Maybe Symbol -> Maybe Ticket -> IO (Either MT5Error [TradeOrder])
+ordersGetEither mSym mTicket = runExceptT (ordersGet mSym mTicket)
+
+-- | Run orderSend as 'IO (Either MT5Error OrderSendResult)' for backward compatibility.
+--
+-- @since 0.2.0.0
+orderSendEither :: MqlTradeRequest -> IO (Either MT5Error OrderSendResult)
+orderSendEither request = runExceptT (orderSend request)
+
+-- | Run accountInfo as 'IO (Either MT5Error AccountInfo)' for backward compatibility.
+--
+-- @since 0.2.0.0
+accountInfoEither :: IO (Either MT5Error AccountInfo)
+accountInfoEither = runExceptT accountInfo
+
+-- | Run symbolInfo as 'IO (Either MT5Error SymbolInfo)' for backward compatibility.
+--
+-- @since 0.2.0.0
+symbolInfoEither :: Symbol -> IO (Either MT5Error SymbolInfo)
+symbolInfoEither symbol = runExceptT (symbolInfo symbol)
+
+-- | Run positionClose as 'IO (Either MT5Error Bool)' for backward compatibility.
+--
+-- @since 0.2.0.0
+positionCloseEither :: Ticket -> IO (Either MT5Error Bool)
+positionCloseEither ticket = runExceptT (positionClose ticket)
+
+-- | Run positionClosePartial as 'IO (Either MT5Error Bool)' for backward compatibility.
+--
+-- @since 0.2.0.0
+positionClosePartialEither :: Ticket -> Double -> IO (Either MT5Error Bool)
+positionClosePartialEither ticket volume = runExceptT (positionClosePartial ticket volume)
+
+-- | Run positionModify as 'IO (Either MT5Error Bool)' for backward compatibility.
+--
+-- @since 0.2.0.0
+positionModifyEither :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+positionModifyEither ticket sl tp = runExceptT (positionModify ticket sl tp)
+
+-- | Run ExceptT computation with default value on error.
+--
+-- Useful when you want to provide a fallback value instead of handling errors explicitly.
+--
+-- ==== __Examples__
+--
+-- >>> positions <- runWithDefault [] positionsGet
+-- >>> print positions  -- Will print [] if error occurs
+--
+-- @since 0.2.0.0
+runWithDefault :: a -> ExceptT e IO a -> IO a
+runWithDefault def action = do
+  result <- runExceptT action
+  return $ either (const def) id result
+
+-- | Run ExceptT computation and log errors, returning 'Maybe'.
+--
+-- Returns 'Nothing' on error after logging, 'Just value' on success.
+--
+-- @since 0.2.0.0
+runWithLogging :: Show e => ExceptT e IO a -> IO (Maybe a)
+runWithLogging action = do
+  result <- runExceptT action
+  case result of
+    Left err -> do
+      $(logWarning) $ "Error: " ++ show err
+      return Nothing
+    Right x -> return (Just x)
+
+-- ==============================================================================
+-- SYMBOL GROUPS
+-- ==============================================================================
+
 -- | Predefined groups for symbol retrieval.
 data SymbolGroup
   = Forex                  -- ^ Forex group symbols
@@ -159,48 +322,56 @@ loginAccount Login {..} = do
 
 
 -- | Retrieve account information for the current session.
+-- | Retrieve account information.
+--
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
 --
 -- **Default Routing**: Prefers PythonBridge (returns 28 complete fields) over FileBridge (14 fields = 50% data loss).
 -- Config can override to FileBridge if explicitly needed, but PythonBridge strongly recommended for production.
+--
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'PythonProcessError': Python bridge communication failed
+--
+-- ==== __Examples__
+--
+-- >>> result <- runExceptT accountInfo
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right info -> print info
 --
 -- Supports dual communication channels:
 -- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (faster but incomplete data)
 -- - PythonBridge: Uses Python-based communication (complete data, recommended default)
 --
--- Returns an 'AccountInfo' record with all account details.
---
 -- Corresponds to MetaTrader5.account_info().
-accountInfo :: IO (Either MT5Error AccountInfo)
+--
+-- @since 0.2.0.0
+accountInfo :: ExceptT MT5Error IO AccountInfo
 accountInfo = do
-  config <- getConfig
+  config <- liftIO getConfig
   case communicationChannel config of
     FileBridge           -> accountInfoViaFile
     FileBridgeCustom _ _ -> accountInfoViaFile
     PythonBridge         -> accountInfoViaPython
 
 -- | Get account info via file-based communication
-accountInfoViaFile :: IO (Either MT5Error AccountInfo)
+accountInfoViaFile :: ExceptT MT5Error IO AccountInfo
 accountInfoViaFile = do
-  $(logInfoText) "Fetching account info via FileBridge"
+  liftIO $ $(logInfoText) "Fetching account info via FileBridge"
   let req = mkAccountInfoRequest
 
   -- Send request and wait for response (5 second timeout)
-  mResponse <- sendRequestViaFile "account_info" req 5000
+  mResponse <- liftIO $ sendRequestViaFile "account_info" req 5000
+  response <- liftMaybe (TimeoutError "account_info" 5000) mResponse
 
-  case mResponse of
-    Nothing -> do
-      $(logWarningText) "Account info request timed out after 5000ms"
-      return $ Left $ TimeoutError "account_info" 5000
-    Just response -> do
-      -- Parse the response data as AccountInfoResponse
-      let mAccountInfo = decode (encode $ responseData response) :: Maybe AccountInfoResponse
-      case mAccountInfo of
-        Nothing -> do
-          $(logWarningText) "Failed to parse account info response"
-          return $ Left $ ParseError "AccountInfoResponse" (T.pack $ show response)
-        Just accResp -> do
-          $(logDebugText) "Successfully parsed account info response"
-          return $ Right $ convertAccountInfoResponse accResp
+  -- Parse the response data as AccountInfoResponse
+  let mAccountInfo = decode (encode $ responseData response) :: Maybe AccountInfoResponse
+  accResp <- liftMaybe (ParseError "AccountInfoResponse" (T.pack $ show response)) mAccountInfo
+  
+  liftIO $ $(logDebugText) "Successfully parsed account info response"
+  return $ convertAccountInfoResponse accResp
 
 -- | Convert AccountInfoResponse to AccountInfo
 convertAccountInfoResponse :: AccountInfoResponse -> AccountInfo
@@ -236,12 +407,12 @@ convertAccountInfoResponse resp = AccountInfo
   }
 
 -- | Get account info via Python bridge (legacy compatibility)
-accountInfoViaPython :: IO (Either MT5Error AccountInfo)
+accountInfoViaPython :: ExceptT MT5Error IO AccountInfo
 accountInfoViaPython = do
-  $(logInfoText) "Fetching account info via PythonBridge"
+  liftIO $ $(logInfoText) "Fetching account info via PythonBridge"
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- try $ do
+  result <- liftIO $ try $ do
     send "ACCOUNT_INFO"
     AccountInfo
       <$> (unpickle' "Int" <$> receive)
@@ -275,11 +446,11 @@ accountInfoViaPython = do
 
   case result of
     Left (e :: SomeException) -> do
-      $(logWarning) $ "Python bridge error: " ++ show e
-      return $ Left $ PythonProcessError (T.pack $ show e)
+      liftIO $ $(logWarning) $ "Python bridge error: " ++ show e
+      throwError $ PythonProcessError (T.pack $ show e)
     Right info -> do
-      $(logDebugText) "Successfully fetched account info via Python"
-      return $ Right info
+      liftIO $ $(logDebugText) "Successfully fetched account info via Python"
+      return info
 
 -- | Request the last error message from the Python server.
 --
@@ -296,48 +467,71 @@ getError formatString = do
 
 -- | Retrieve all open positions for the current account.
 --
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
+--
 -- **Default Routing**: Prefers PythonBridge (returns 19 complete fields) over FileBridge (12 fields = 37% data loss).
 -- Config can override to FileBridge if explicitly needed, but PythonBridge strongly recommended for production.
+--
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'BrokerError': MT5 returned error (e.g., connection lost)
+-- - 'PythonProcessError': Python bridge communication failed
+--
+-- ==== __Examples__
+--
+-- >>> -- Direct usage with runExceptT
+-- >>> result <- runExceptT positionsGet
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right positions -> print positions
+--
+-- >>> -- Composition with automatic error propagation
+-- >>> tradingOp = do
+-- >>>   positions <- positionsGet
+-- >>>   orders <- ordersGet Nothing Nothing
+-- >>>   return (length positions, length orders)
+-- >>> result <- runExceptT tradingOp
+--
+-- >>> -- Using compatibility wrapper for Either
+-- >>> result <- positionsGetEither
 --
 -- Supports dual communication channels:
 -- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (faster but incomplete data)
 -- - PythonBridge: Uses Python-based communication (complete data, recommended default)
 --
--- Returns a list of 'TradePosition' records.
---
 -- Corresponds to MetaTrader5.positions_get().
-positionsGet :: IO (Either MT5Error [TradePosition])
+--
+-- @since 0.2.0.0
+positionsGet :: ExceptT MT5Error IO [TradePosition]
 positionsGet = do
-  config <- getConfig
+  config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionsGetViaFile Nothing
     FileBridgeCustom _ _ -> positionsGetViaFile Nothing
     PythonBridge         -> positionsGetViaPython
 
 -- | Get positions via file-based communication
-positionsGetViaFile :: Maybe Symbol -> IO (Either MT5Error [TradePosition])
+positionsGetViaFile :: Maybe Symbol -> ExceptT MT5Error IO [TradePosition]
 positionsGetViaFile mSymbol = do
-  $(logInfo) $ "Fetching positions via FileBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mSymbol
+  liftIO $ $(logInfo) $ "Fetching positions via FileBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mSymbol
   let req = mkPositionsGetRequest (fmap T.pack mSymbol)
 
   -- Send request and wait for response (5 second timeout)
-  mResponse <- sendRequestViaFile "positions_get" req 5000
+  mResponse <- liftIO $ sendRequestViaFile "positions_get" req 5000
+  response <- liftMaybe (TimeoutError "positions_get" 5000) mResponse
 
-  case mResponse of
-    Nothing -> do
-      $(logWarningText) "Positions get request timed out after 5000ms"
-      return $ Left $ TimeoutError "positions_get" 5000
-    Just response -> do
-      -- Parse the response data as PositionsGetResponse
-      let mPositionsResp = decode (encode $ responseData response) :: Maybe PositionsGetResponse
-      case mPositionsResp of
-        Nothing -> do
-          $(logWarningText) "Failed to parse positions get response"
-          return $ Left $ ParseError "PositionsGetResponse" (T.pack $ show response)
-        Just posResp -> do
-          let positions = map convertPositionInfoResponse (positionsGetPositions posResp)
-          $(logDebug) $ "Successfully parsed " ++ show (length positions) ++ " positions"
-          return $ Right positions
+  -- Parse the response data as PositionsGetResponse
+  let mPositionsResp = decode (encode $ responseData response) :: Maybe PositionsGetResponse
+  posResp <- liftMaybe (ParseError "PositionsGetResponse" (T.pack $ show response)) mPositionsResp
+
+  if positionsGetSuccess posResp
+    then do
+      let positions = map convertPositionInfoResponse (positionsGetPositions posResp)
+      liftIO $ $(logDebug) $ "Successfully parsed " ++ show (length positions) ++ " positions"
+      return positions
+    else
+      throwError $ BrokerError TRADE_RETCODE_ERROR (T.pack "Positions get failed")
 
 -- | Convert PositionInfoResponse to TradePosition
 convertPositionInfoResponse :: PositionInfoResponse -> TradePosition
@@ -364,12 +558,12 @@ convertPositionInfoResponse resp = TradePosition
   }
 
 -- | Get positions via Python bridge (legacy compatibility)
-positionsGetViaPython :: IO (Either MT5Error [TradePosition])
+positionsGetViaPython :: ExceptT MT5Error IO [TradePosition]
 positionsGetViaPython = do
-  $(logInfoText) "Fetching positions via PythonBridge"
+  liftIO $ $(logInfoText) "Fetching positions via PythonBridge"
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- try $ do
+  result <- liftIO $ try $ do
     send "POSITIONS_GET"
     len <- unpickle' "Int" <$> receive
     replicateM len
@@ -396,292 +590,356 @@ positionsGetViaPython = do
 
   case result of
     Left (e :: SomeException) -> do
-      $(logWarning) $ "Python bridge error: " ++ show e
-      return $ Left $ PythonProcessError (T.pack $ show e)
+      liftIO $ $(logWarning) $ "Python bridge error: " ++ show e
+      throwError $ PythonProcessError (T.pack $ show e)
     Right positions -> do
-      $(logDebug) $ "Successfully fetched " ++ show (length positions) ++ " positions via Python"
-      return $ Right positions
+      liftIO $ $(logDebug) $ "Successfully fetched " ++ show (length positions) ++ " positions via Python"
+      return positions
 
 -- | Close a position completely.
+--
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
 --
 -- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
 --
 -- For PythonBridge: Closes position by sending opposite order with position parameter set.
 -- For FileBridge: Uses dedicated position_close EA action.
 --
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'ValidationError': Invalid ticket or position not found
+-- - 'BrokerError': MT5 broker returned error
+--
+-- ==== __Examples__
+--
+-- >>> result <- runExceptT $ positionClose 12345
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right success -> print success
+--
 -- Corresponds to position_close EA action (FileBridge) or opposite order technique (PythonBridge).
 --
--- Returns 'Right True' on successful close, 'Right False' if operation failed but was valid,
--- or 'Left error' for errors like timeout, invalid requests, or position not found.
-positionClose :: Ticket -> IO (Either MT5Error Bool)
+-- @since 0.2.0.0
+positionClose :: Ticket -> ExceptT MT5Error IO Bool
 positionClose ticket = do
-  config <- getConfig
+  config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionCloseViaFile ticket
     FileBridgeCustom _ _ -> positionCloseViaFile ticket
     PythonBridge         -> positionCloseViaPython ticket
 
 -- | Close a position via file-based communication
-positionCloseViaFile :: Ticket -> IO (Either MT5Error Bool)
+positionCloseViaFile :: Ticket -> ExceptT MT5Error IO Bool
 positionCloseViaFile ticket = do
   let eitherReq = mkPositionCloseRequest (fromIntegral ticket)
-  case eitherReq of
-    Left err -> return $ Left $ ValidationError $ T.pack $ "Invalid position close request: " ++ show err
-    Right req -> do
-      mResponse <- sendRequestViaFile "position_close" req 5000
-      case mResponse of
-        Nothing -> return $ Left $ TimeoutError "position_close" 5000
-        Just response -> do
-          let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
-          case mResp of
-            Nothing -> return $ Left $ ParseError "PositionCloseResponse" (T.pack $ show response)
-            Just resp -> return $ Right $ positionCloseSuccess resp
+  req <- eitherToExceptT $ case eitherReq of
+    Left err -> Left $ ValidationError $ T.pack $ "Invalid position close request: " ++ show err
+    Right r -> Right r
+  
+  mResponse <- liftIO $ sendRequestViaFile "position_close" req 5000
+  response <- liftMaybe (TimeoutError "position_close" 5000) mResponse
+  
+  let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
+  resp <- liftMaybe (ParseError "PositionCloseResponse" (T.pack $ show response)) mResp
+  return $ positionCloseSuccess resp
 
 -- | Close a position via Python bridge
 --
 -- Closes position by sending an opposite order with the position parameter set.
 -- This is the standard MT5 method when mt5.Close() is not available.
-positionCloseViaPython :: Ticket -> IO (Either MT5Error Bool)
+positionCloseViaPython :: Ticket -> ExceptT MT5Error IO Bool
 positionCloseViaPython ticket = do
   -- First get the position to know its details
-  positionsResult <- positionsGet
-  case positionsResult of
-    Left err -> return $ Left err
-    Right positions ->
-      case filter (\p -> trPosTicket p == ticket) positions of
-        [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
-        (pos:_) -> do
-          -- Create opposite order to close the position
-          let oppositeType = case trPosType pos of
-                POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
-                POSITION_TYPE_SELL -> ORDER_TYPE_BUY
+  positions <- positionsGet
+  case filter (\p -> trPosTicket p == ticket) positions of
+    [] -> throwError $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+    (pos:_) -> do
+      -- Create opposite order to close the position
+      let oppositeType = case trPosType pos of
+            POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
+            POSITION_TYPE_SELL -> ORDER_TYPE_BUY
 
-          let closeRequest = MqlTradeRequest
-                { trReqAction      = TRADE_ACTION_DEAL
-                , trReqMagic       = 0
-                , trReqOrder       = 0
-                , trReqSymbol      = trPosSymbol pos
-                , trReqVolume      = trPosVolume pos
-                , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
-                , trReqStoplimit   = DecimalNumber Nothing 0.0
-                , trReqSl          = DecimalNumber Nothing 0.0
-                , trReqTp          = DecimalNumber Nothing 0.0
-                , trReqDeviation   = 10
-                , trReqType        = oppositeType
-                , trReqTypeFilling = ORDER_FILLING_FOK
-                , trReqTypeTime    = ORDER_TIME_GTC
-                , trReqExpiration  = 0
-                , trReqComment     = "Close position " ++ show ticket
-                , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
-                , trReqPositionBy  = 0
-                }
+      let closeRequest = MqlTradeRequest
+            { trReqAction      = TRADE_ACTION_DEAL
+            , trReqMagic       = 0
+            , trReqOrder       = 0
+            , trReqSymbol      = trPosSymbol pos
+            , trReqVolume      = trPosVolume pos
+            , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
+            , trReqStoplimit   = DecimalNumber Nothing 0.0
+            , trReqSl          = DecimalNumber Nothing 0.0
+            , trReqTp          = DecimalNumber Nothing 0.0
+            , trReqDeviation   = 10
+            , trReqType        = oppositeType
+            , trReqTypeFilling = ORDER_FILLING_FOK
+            , trReqTypeTime    = ORDER_TIME_GTC
+            , trReqExpiration  = 0
+            , trReqComment     = "Close position " ++ show ticket
+            , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
+            , trReqPositionBy  = 0
+            }
 
-          result <- orderSendViaPython closeRequest
-          return $ ((== TRADE_RETCODE_DONE) . ordSendRetcode) <$> result
+      result <- orderSendViaPython closeRequest
+      return $ (== TRADE_RETCODE_DONE) . ordSendRetcode $ result
 
 -- | Close a position partially (reduce volume).
+--
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
 --
 -- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
 --
 -- For PythonBridge: Closes partial volume by sending opposite order with smaller volume.
 -- For FileBridge: Uses dedicated position_close_partial EA action.
 --
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'ValidationError': Invalid ticket, volume, or position not found
+--
+-- ==== __Examples__
+--
+-- >>> result <- runExceptT $ positionClosePartial 12345 0.5
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right success -> print success
+--
 -- Corresponds to position_close_partial EA action.
 --
--- Returns 'Right True' on successful partial close, 'Right False' if operation failed but was valid,
--- or 'Left error' for errors like timeout, invalid requests, or position not found.
-positionClosePartial :: Ticket -> Double -> IO (Either MT5Error Bool)
+-- @since 0.2.0.0
+positionClosePartial :: Ticket -> Double -> ExceptT MT5Error IO Bool
 positionClosePartial ticket volume = do
-  config <- getConfig
+  config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionClosePartialViaFile ticket volume
     FileBridgeCustom _ _ -> positionClosePartialViaFile ticket volume
     PythonBridge         -> positionClosePartialViaPython ticket volume
 
 -- | Close position partially via file-based communication
-positionClosePartialViaFile :: Ticket -> Double -> IO (Either MT5Error Bool)
+positionClosePartialViaFile :: Ticket -> Double -> ExceptT MT5Error IO Bool
 positionClosePartialViaFile ticket volume = do
   -- Convert Double to DecimalNumber
   let volResult = mkDecimalNumberFromDouble volume
-  case volResult of
-    Left _ -> return $ Left $ ValidationError $ T.pack $ "Invalid volume: " ++ show volume
-    Right vol -> do
-      let eitherReq = mkPositionClosePartialRequest (fromIntegral ticket) vol
-      case eitherReq of
-        Left err -> return $ Left $ ValidationError $ T.pack $ "Invalid position close partial request: " ++ show err
-        Right req -> do
-          mResponse <- sendRequestViaFile "position_close_partial" req 5000
-          case mResponse of
-            Nothing -> return $ Left $ TimeoutError "position_close_partial" 5000
-            Just response -> do
-              let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
-              case mResp of
-                Nothing -> return $ Left $ ParseError "PositionCloseResponse" (T.pack $ show response)
-                Just resp -> return $ Right $ positionCloseSuccess resp
+  vol <- eitherToExceptT $ case volResult of
+    Left _ -> Left $ ValidationError $ T.pack $ "Invalid volume: " ++ show volume
+    Right v -> Right v
+  
+  let eitherReq = mkPositionClosePartialRequest (fromIntegral ticket) vol
+  req <- eitherToExceptT $ case eitherReq of
+    Left err -> Left $ ValidationError $ T.pack $ "Invalid position close partial request: " ++ show err
+    Right r -> Right r
+  
+  mResponse <- liftIO $ sendRequestViaFile "position_close_partial" req 5000
+  response <- liftMaybe (TimeoutError "position_close_partial" 5000) mResponse
+  
+  let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
+  resp <- liftMaybe (ParseError "PositionCloseResponse" (T.pack $ show response)) mResp
+  return $ positionCloseSuccess resp
 
 -- | Modify a position's stop-loss and take-profit levels.
+--
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
 --
 -- **Uses positionManagementChannel** from Config (defaults to FileBridge for reliability).
 --
 -- For PythonBridge: Modifies position SL/TP using TRADE_ACTION_SLTP.
 -- For FileBridge: Uses dedicated position_modify EA action.
 --
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'ValidationError': Invalid ticket or position not found
+--
+-- ==== __Examples__
+--
+-- >>> result <- runExceptT $ positionModify 12345 1.2000 1.2100
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right success -> print success
+--
 -- Corresponds to position_modify EA action.
 --
--- Returns 'Right True' on successful modification, 'Right False' if operation failed but was valid,
--- or 'Left error' for errors like timeout, invalid requests, or position not found.
-positionModify :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+-- @since 0.2.0.0
+positionModify :: Ticket -> Double -> Double -> ExceptT MT5Error IO Bool
 positionModify ticket sl tp = do
-  config <- getConfig
+  config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionModifyViaFile ticket sl tp
     FileBridgeCustom _ _ -> positionModifyViaFile ticket sl tp
     PythonBridge         -> positionModifyViaPython ticket sl tp
 
 -- | Modify position via file-based communication
-positionModifyViaFile :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+positionModifyViaFile :: Ticket -> Double -> Double -> ExceptT MT5Error IO Bool
 positionModifyViaFile ticket sl tp = do
   let eitherReq = mkPositionModifyRequest (fromIntegral ticket) sl tp
-  case eitherReq of
-    Left err -> return $ Left $ ValidationError $ T.pack $ "Invalid position modify request: " ++ show err
-    Right req -> do
-      mResponse <- sendRequestViaFile "position_modify" req 5000
-      case mResponse of
-        Nothing -> return $ Left $ TimeoutError "position_modify" 5000
-        Just response -> do
-          let mResp = decode (encode $ responseData response) :: Maybe PositionModifyResponse
-          case mResp of
-            Nothing -> return $ Left $ ParseError "PositionModifyResponse" (T.pack $ show response)
-            Just resp -> return $ Right $ positionModifySuccess resp
+  req <- eitherToExceptT $ case eitherReq of
+    Left err -> Left $ ValidationError $ T.pack $ "Invalid position modify request: " ++ show err
+    Right r -> Right r
+  
+  mResponse <- liftIO $ sendRequestViaFile "position_modify" req 5000
+  response <- liftMaybe (TimeoutError "position_modify" 5000) mResponse
+  
+  let mResp = decode (encode $ responseData response) :: Maybe PositionModifyResponse
+  resp <- liftMaybe (ParseError "PositionModifyResponse" (T.pack $ show response)) mResp
+  return $ positionModifySuccess resp
 
 -- | Close partial position via Python bridge
-positionClosePartialViaPython :: Ticket -> Double -> IO (Either MT5Error Bool)
+positionClosePartialViaPython :: Ticket -> Double -> ExceptT MT5Error IO Bool
 positionClosePartialViaPython ticket volume = do
   -- Convert Double to DecimalNumber
   let volResult = mkDecimalNumberFromDouble volume
-  case volResult of
-    Left _ -> return $ Left $ ValidationError $ T.pack $ "Invalid volume: " ++ show volume
-    Right vol -> do
-      -- First get the position to know its details
-      positionsResult <- positionsGet
-      case positionsResult of
-        Left err -> return $ Left err
-        Right positions ->
-          case filter (\p -> trPosTicket p == ticket) positions of
-            [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
-            (pos:_) -> do
-              -- Create opposite order with partial volume to close
-              let oppositeType = case trPosType pos of
-                    POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
-                    POSITION_TYPE_SELL -> ORDER_TYPE_BUY
+  vol <- eitherToExceptT $ case volResult of
+    Left _ -> Left $ ValidationError $ T.pack $ "Invalid volume: " ++ show volume
+    Right v -> Right v
+  
+  -- First get the position to know its details
+  positions <- positionsGet
+  case filter (\p -> trPosTicket p == ticket) positions of
+    [] -> throwError $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+    (pos:_) -> do
+      -- Create opposite order with partial volume to close
+      let oppositeType = case trPosType pos of
+            POSITION_TYPE_BUY  -> ORDER_TYPE_SELL
+            POSITION_TYPE_SELL -> ORDER_TYPE_BUY
 
-              let closeRequest = MqlTradeRequest
-                    { trReqAction      = TRADE_ACTION_DEAL
-                    , trReqMagic       = 0
-                    , trReqOrder       = 0
-                    , trReqSymbol      = trPosSymbol pos
-                    , trReqVolume      = vol  -- Partial volume (now DecimalNumber type)
-                    , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
-                    , trReqStoplimit   = DecimalNumber Nothing 0.0
-                    , trReqSl          = DecimalNumber Nothing 0.0
-                    , trReqTp          = DecimalNumber Nothing 0.0
-                    , trReqDeviation   = 10
-                    , trReqType        = oppositeType
-                    , trReqTypeFilling = ORDER_FILLING_FOK
-                    , trReqTypeTime    = ORDER_TIME_GTC
-                    , trReqExpiration  = 0
-                    , trReqComment     = "Close partial " ++ show ticket
-                    , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
-                    , trReqPositionBy  = 0
-                    }
+      let closeRequest = MqlTradeRequest
+            { trReqAction      = TRADE_ACTION_DEAL
+            , trReqMagic       = 0
+            , trReqOrder       = 0
+            , trReqSymbol      = trPosSymbol pos
+            , trReqVolume      = vol  -- Partial volume (now DecimalNumber type)
+            , trReqPrice       = DecimalNumber Nothing 0.0  -- Market price
+            , trReqStoplimit   = DecimalNumber Nothing 0.0
+            , trReqSl          = DecimalNumber Nothing 0.0
+            , trReqTp          = DecimalNumber Nothing 0.0
+            , trReqDeviation   = 10
+            , trReqType        = oppositeType
+            , trReqTypeFilling = ORDER_FILLING_FOK
+            , trReqTypeTime    = ORDER_TIME_GTC
+            , trReqExpiration  = 0
+            , trReqComment     = "Close partial " ++ show ticket
+            , trReqPosition    = ticket  -- CRITICAL: This closes the specific position
+            , trReqPositionBy  = 0
+            }
 
-              result <- orderSendViaPython closeRequest
-              return $ ((TRADE_RETCODE_DONE ==) . ordSendRetcode) <$> result
+      result <- orderSendViaPython closeRequest
+      return $ (TRADE_RETCODE_DONE ==) . ordSendRetcode $ result
 
 -- | Modify position via Python bridge
-positionModifyViaPython :: Ticket -> Double -> Double -> IO (Either MT5Error Bool)
+positionModifyViaPython :: Ticket -> Double -> Double -> ExceptT MT5Error IO Bool
 positionModifyViaPython ticket sl tp = do
   -- Get position to know its symbol
-  positionsResult <- positionsGet
-  case positionsResult of
-    Left err -> return $ Left err
-    Right positions ->
-      case filter (\p -> trPosTicket p == ticket) positions of
-        [] -> return $ Left $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
-        (pos:_) -> do
-          let modifyRequest = MqlTradeRequest
-                { trReqAction      = TRADE_ACTION_SLTP
-                , trReqMagic       = 0
-                , trReqOrder       = 0
-                , trReqSymbol      = trPosSymbol pos
-                , trReqVolume      = DecimalNumber Nothing 0.0  -- Not needed for SLTP
-                , trReqPrice       = DecimalNumber Nothing 0.0  -- Not needed for SLTP
-                , trReqStoplimit   = DecimalNumber Nothing 0.0
-                , trReqSl          = DecimalNumber Nothing sl   -- New stop loss
-                , trReqTp          = DecimalNumber Nothing tp   -- New take profit
-                , trReqDeviation   = 0
-                , trReqType        = ORDER_TYPE_BUY  -- Doesn't matter for SLTP
-                , trReqTypeFilling = ORDER_FILLING_FOK
-                , trReqTypeTime    = ORDER_TIME_GTC
-                , trReqExpiration  = 0
-                , trReqComment     = "Modify SL/TP " ++ show ticket
-                , trReqPosition    = ticket  -- CRITICAL: Position to modify
-                , trReqPositionBy  = 0
-                }
+  positions <- positionsGet
+  case filter (\p -> trPosTicket p == ticket) positions of
+    [] -> throwError $ ValidationError $ T.pack $ "Position not found: " ++ show ticket
+    (pos:_) -> do
+      let modifyRequest = MqlTradeRequest
+            { trReqAction      = TRADE_ACTION_SLTP
+            , trReqMagic       = 0
+            , trReqOrder       = 0
+            , trReqSymbol      = trPosSymbol pos
+            , trReqVolume      = DecimalNumber Nothing 0.0  -- Not needed for SLTP
+            , trReqPrice       = DecimalNumber Nothing 0.0  -- Not needed for SLTP
+            , trReqStoplimit   = DecimalNumber Nothing 0.0
+            , trReqSl          = DecimalNumber Nothing sl   -- New stop loss
+            , trReqTp          = DecimalNumber Nothing tp   -- New take profit
+            , trReqDeviation   = 0
+            , trReqType        = ORDER_TYPE_BUY  -- Doesn't matter for SLTP
+            , trReqTypeFilling = ORDER_FILLING_FOK
+            , trReqTypeTime    = ORDER_TIME_GTC
+            , trReqExpiration  = 0
+            , trReqComment     = "Modify SL/TP " ++ show ticket
+            , trReqPosition    = ticket  -- CRITICAL: Position to modify
+            , trReqPositionBy  = 0
+            }
 
-          result <- orderSendViaPython modifyRequest
-          return $ ((== TRADE_RETCODE_DONE) . ordSendRetcode) <$> result
+      result <- orderSendViaPython modifyRequest
+      return $ (== TRADE_RETCODE_DONE) . ordSendRetcode $ result
 
 -- | Get active orders with the ability to filter by symbol or ticket.
+--
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
 --
 -- **Default Routing**: Prefers PythonBridge (returns 17 complete fields) over FileBridge (10 fields = 41% data loss).
 -- Config can override to FileBridge if explicitly needed, but PythonBridge strongly recommended for production.
 --
 -- **Note**: Ticket filtering only works with PythonBridge (FileBridge ignores ticket parameter).
 --
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'BrokerError': MT5 returned error (e.g., connection lost)
+-- - 'PythonProcessError': Python bridge communication failed
+--
+-- ==== __Examples__
+--
+-- >>> -- Get all orders
+-- >>> result <- runExceptT $ ordersGet Nothing Nothing
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right orders -> print orders
+--
+-- >>> -- Get orders for specific symbol
+-- >>> result <- runExceptT $ ordersGet (Just "EURUSD") Nothing
+--
+-- >>> -- Get specific order by ticket (PythonBridge only)
+-- >>> result <- runExceptT $ ordersGet Nothing (Just 12345)
+--
+-- >>> -- Composition with automatic error propagation
+-- >>> tradingOp = do
+-- >>>   orders <- ordersGet Nothing Nothing
+-- >>>   positions <- positionsGet
+-- >>>   return (length orders, length positions)
+-- >>> result <- runExceptT tradingOp
+--
+-- >>> -- Using compatibility wrapper for Either
+-- >>> result <- ordersGetEither Nothing Nothing
+--
 -- Supports dual communication channels:
 -- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (faster but incomplete data, symbol filter only)
 -- - PythonBridge: Uses Python-based communication (complete data + ticket filter, recommended default)
 --
+-- Corresponds to MetaTrader5.orders_get().
+--
+-- @since 0.2.0.0
+--
 ordersGet :: Maybe Symbol      -- ^ Optional symbol filter (e.g., Just "EURUSD")
           -> Maybe Ticket      -- ^ Optional ticket filter (e.g., Just 12345) - PythonBridge only
-          -> IO (Either MT5Error [TradeOrder])
+          -> ExceptT MT5Error IO [TradeOrder]
 ordersGet mInstr mTicket = do
-  config <- getConfig
+  config <- liftIO getConfig
   case communicationChannel config of
     FileBridge           -> ordersGetViaFile mInstr mTicket
     FileBridgeCustom _ _ -> ordersGetViaFile mInstr mTicket
     PythonBridge         -> ordersGetViaPython mInstr mTicket
 
 -- | Retrieve orders using file bridge (Note: ticket filter not supported by EA)
-ordersGetViaFile :: Maybe Symbol -> Maybe Ticket -> IO (Either MT5Error [TradeOrder])
+ordersGetViaFile :: Maybe Symbol -> Maybe Ticket -> ExceptT MT5Error IO [TradeOrder]
 ordersGetViaFile mSymbol _mTicket = do
-  $(logInfo) $ "Fetching orders via FileBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mSymbol
-  $(logWarningText) "Note: FileBridge does not support ticket filtering"
+  liftIO $ $(logInfo) $ "Fetching orders via FileBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mSymbol
+  liftIO $ $(logWarningText) "Note: FileBridge does not support ticket filtering"
   let req = mkOrdersGetRequest (fmap T.pack mSymbol)
-  mResponse <- sendRequestViaFile "orders_get" req 5000
-  case mResponse of
-    Nothing -> do
-      $(logWarningText) "Orders get request timed out after 5000ms"
-      return $ Left $ TimeoutError "orders_get" 5000
-    Just response -> do
-      let mOrders = decode (encode $ responseData response) :: Maybe OrdersGetResponse
-      case mOrders of
-        Nothing -> do
-          $(logWarningText) "Failed to parse orders response"
-          return $ Left $ ParseError "OrdersGetResponse" (T.pack $ show response)
-        Just resp -> do
-          let orders = map convertOrderInfoResponse (ordersGetOrders resp)
-          $(logDebug) $ "Successfully parsed " ++ show (length orders) ++ " orders"
-          return $ Right orders
+  mResponse <- liftIO $ sendRequestViaFile "orders_get" req 5000
+  response <- liftMaybe (TimeoutError "orders_get" 5000) mResponse
+
+  let mOrders = decode (encode $ responseData response) :: Maybe OrdersGetResponse
+  resp <- liftMaybe (ParseError "OrdersGetResponse" (T.pack $ show response)) mOrders
+
+  if ordersGetSuccess resp
+    then do
+      let orders = map convertOrderInfoResponse (ordersGetOrders resp)
+      liftIO $ $(logDebug) $ "Successfully parsed " ++ show (length orders) ++ " orders"
+      return orders
+    else
+      throwError $ BrokerError TRADE_RETCODE_ERROR (T.pack "Orders get failed")
 
 -- | Retrieve orders using Python bridge (original implementation)
-ordersGetViaPython :: Maybe Symbol -> Maybe Ticket -> IO (Either MT5Error [TradeOrder])
+ordersGetViaPython :: Maybe Symbol -> Maybe Ticket -> ExceptT MT5Error IO [TradeOrder]
 ordersGetViaPython mInstr mTicket = do
-  $(logInfo) $ "Fetching orders via PythonBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mInstr
+  liftIO $ $(logInfo) $ "Fetching orders via PythonBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mInstr
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- try $ do
+  result <- liftIO $ try $ do
     case (mInstr, mTicket) of
       (Just instr, Nothing) -> do
         send "ORDERS_GET_SYMBOL"
@@ -714,11 +972,11 @@ ordersGetViaPython mInstr mTicket = do
 
   case result of
     Left (e :: SomeException) -> do
-      $(logWarning) $ "Python bridge error: " ++ show e
-      return $ Left $ PythonProcessError (T.pack $ show e)
+      liftIO $ $(logWarning) $ "Python bridge error: " ++ show e
+      throwError $ PythonProcessError (T.pack $ show e)
     Right orders -> do
-      $(logDebug) $ "Successfully fetched " ++ show (length orders) ++ " orders via Python"
-      return $ Right orders
+      liftIO $ $(logDebug) $ "Successfully fetched " ++ show (length orders) ++ " orders via Python"
+      return orders
 
 -- | Convert OrderInfoResponse (10 fields) to TradeOrder (17 fields)
 convertOrderInfoResponse :: OrderInfoResponse -> TradeOrder
@@ -764,6 +1022,8 @@ symbolsGet mGroup =
 
 -- | Retrieve information for a specific symbol.
 --
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
+--
 -- **CRITICAL - Default Routing**: ALWAYS use PythonBridge in production!
 -- FileBridge returns only 7 of 104 fields (93% data loss) which may cause order rejections.
 -- Missing: contract size, tick value, volume limits, swap rates, margin requirements, ALL options data.
@@ -771,62 +1031,69 @@ symbolsGet mGroup =
 -- **Default Routing**: Prefers PythonBridge (returns 104 complete fields) over FileBridge (7 fields = 93% data loss).
 -- Config can override to FileBridge but this is STRONGLY DISCOURAGED for production use.
 --
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'ValidationError': Invalid symbol name
+-- - 'PythonProcessError': Python bridge communication failed
+--
+-- ==== __Examples__
+--
+-- >>> result <- runExceptT $ symbolInfo "EURUSD"
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Error: " ++ show err
+-- >>>   Right info -> print info
+--
 -- Supports dual communication channels:
 -- - FileBridge: Uses file-based communication with MT5RestAPIBridge.mq5 (INCOMPLETE - only 7 basic fields)
 -- - PythonBridge: Uses Python-based communication (COMPLETE - all 104 fields, REQUIRED for production)
 --
+-- @since 0.2.0.0
 symbolInfo :: Symbol            -- ^ Symbol name to query (e.g., "EURUSD")
-           -> IO (Either MT5Error SymbolInfo)
+           -> ExceptT MT5Error IO SymbolInfo
 symbolInfo symbol = do
-  config <- getConfig
+  config <- liftIO getConfig
   case communicationChannel config of
     FileBridge           -> symbolInfoViaFile symbol
     FileBridgeCustom _ _ -> symbolInfoViaFile symbol
     PythonBridge         -> symbolInfoViaPython symbol
 
 -- | Retrieve symbol information using file bridge
-symbolInfoViaFile :: Symbol -> IO (Either MT5Error SymbolInfo)
+symbolInfoViaFile :: Symbol -> ExceptT MT5Error IO SymbolInfo
 symbolInfoViaFile symbol = do
-  $(logInfo) $ "Fetching symbol info via FileBridge for: " ++ symbol
+  liftIO $ $(logInfo) $ "Fetching symbol info via FileBridge for: " ++ symbol
   let reqResult = mkSymbolInfoRequest (T.pack symbol)
-  case reqResult of
-    Left err -> do
-      $(logWarning) $ "Invalid symbol request: " ++ show err
-      return $ Left $ ValidationError (T.pack $ "Invalid symbol request: " ++ show err)
-    Right req -> do
-      mResponse <- sendRequestViaFile "symbol_info" req 5000
-      case mResponse of
-        Nothing -> do
-          $(logWarning) $ "Symbol info request timed out for symbol: " ++ symbol
-          return $ Left $ TimeoutError (T.pack $ "symbol_info:" ++ symbol) 5000
-        Just response -> do
-          let mSymbolInfo = decode (encode $ responseData response) :: Maybe SymbolInfoResponse
-          case mSymbolInfo of
-            Nothing -> do
-              $(logWarning) $ "Failed to parse symbol info response for: " ++ symbol
-              return $ Left $ ParseError "SymbolInfoResponse" (T.pack $ show response)
-            Just resp -> do
-              $(logDebug) $ "Successfully parsed symbol info for: " ++ symbol
-              return $ Right $ convertSymbolInfoResponse resp
+  req <- eitherToExceptT $ case reqResult of
+    Left err -> Left $ ValidationError (T.pack $ "Invalid symbol request: " ++ show err)
+    Right r -> Right r
+  
+  mResponse <- liftIO $ sendRequestViaFile "symbol_info" req 5000
+  response <- liftMaybe (TimeoutError (T.pack $ "symbol_info:" ++ symbol) 5000) mResponse
+  
+  let mSymbolInfo = decode (encode $ responseData response) :: Maybe SymbolInfoResponse
+  resp <- liftMaybe (ParseError "SymbolInfoResponse" (T.pack $ show response)) mSymbolInfo
+  
+  liftIO $ $(logDebug) $ "Successfully parsed symbol info for: " ++ symbol
+  return $ convertSymbolInfoResponse resp
 
 -- | Retrieve symbol information using Python bridge (original implementation)
-symbolInfoViaPython :: Symbol -> IO (Either MT5Error SymbolInfo)
+symbolInfoViaPython :: Symbol -> ExceptT MT5Error IO SymbolInfo
 symbolInfoViaPython symbol = do
-  $(logInfo) $ "Fetching symbol info via PythonBridge for: " ++ symbol
+  liftIO $ $(logInfo) $ "Fetching symbol info via PythonBridge for: " ++ symbol
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- try $ do
+  result <- liftIO $ try $ do
     send "SYMBOL_INFO"
     send symbol
     readSymbolInfo
 
   case result of
     Left (e :: SomeException) -> do
-      $(logWarning) $ "Python bridge error: " ++ show e
-      return $ Left $ PythonProcessError (T.pack $ show e)
+      liftIO $ $(logWarning) $ "Python bridge error: " ++ show e
+      throwError $ PythonProcessError (T.pack $ show e)
     Right info -> do
-      $(logDebug) $ "Successfully fetched symbol info via Python for: " ++ symbol
-      return $ Right info
+      liftIO $ $(logDebug) $ "Successfully fetched symbol info via Python for: " ++ symbol
+      return info
 
 -- | Convert SymbolInfoResponse (7 fields) to SymbolInfo (98+ fields with defaults)
 convertSymbolInfoResponse :: SymbolInfoResponse -> SymbolInfo
@@ -1116,16 +1383,44 @@ sendMqlTradeRequest MqlTradeRequest {..} = do
 -- Corresponds to MetaTrader5.order_send().
 -- | Send a trade request to the market.
 --
+-- Uses 'ExceptT' for type-safe error handling with automatic error propagation.
+--
 -- **Uses positionManagementChannel** from Config (defaults to FileBridge for broker requirements).
 --
 -- Sends the 'ORDER_SEND' command with the trade request and receives execution result.
--- Returns an 'OrderSendResult' with trade execution details.
+--
+-- **Errors**:
+-- - 'TimeoutError': Request timed out after 5 seconds
+-- - 'ParseError': Failed to parse response from MT5 EA
+-- - 'BrokerError': MT5 returned error code (e.g., TRADE_RETCODE_INVALID)
+-- - 'PythonProcessError': Python bridge communication failed
+--
+-- ==== __Examples__
+--
+-- >>> -- Send a buy order
+-- >>> result <- runExceptT $ orderSend myBuyRequest
+-- >>> case result of
+-- >>>   Left err -> putStrLn $ "Order failed: " ++ show err
+-- >>>   Right orderResult -> print orderResult
+--
+-- >>> -- Composition with automatic error propagation
+-- >>> tradingOp = do
+-- >>>   orders <- ordersGet Nothing Nothing
+-- >>>   result <- orderSend myRequest
+-- >>>   return (length orders, result)
+-- >>> result <- runExceptT tradingOp
+--
+-- >>> -- Using compatibility wrapper
+-- >>> result <- orderSendEither myRequest
 --
 -- Corresponds to MetaTrader5.order_send().
+--
+-- @since 0.2.0.0
+--
 orderSend :: MqlTradeRequest   -- ^ Trade request parameters to execute
-          -> IO (Either MT5Error OrderSendResult)
+          -> ExceptT MT5Error IO OrderSendResult
 orderSend request = do
-  config <- getConfig
+  config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> orderSendViaFile request
     FileBridgeCustom _ _ -> orderSendViaFile request
@@ -1137,55 +1432,42 @@ orderSend request = do
 -- - Position close: When position > 0, action = DEAL → routes to positionClose/positionClosePartial
 -- - Position modify: When position > 0, action = SLTP → routes to positionModify
 -- - Other cases: Uses generic OrderSend handler
-orderSendViaFile :: MqlTradeRequest -> IO (Either MT5Error OrderSendResult)
+orderSendViaFile :: MqlTradeRequest -> ExceptT MT5Error IO OrderSendResult
 orderSendViaFile mqlReq = do
   -- Log incoming request for debugging (full details via show)
-  $(logInfo) $ "[orderSendViaFile] Incoming MqlTradeRequest: " ++ show mqlReq
+  liftIO $ $(logInfo) $ "[orderSendViaFile] Incoming MqlTradeRequest: " ++ show mqlReq
 
   -- Check if this should be routed to a specialized handler
   case (trReqAction mqlReq, trReqPosition mqlReq) of
     -- Position close: action=DEAL + position > 0
     (TRADE_ACTION_DEAL, pos) | pos > 0 -> do
       -- Need to determine if full or partial close by getting position info
-      positionsResult <- positionsGet
-      case positionsResult of
-        Left err -> return $ Right OrderSendResult
-          { ordSendRetcode      = TRADE_RETCODE_INVALID_FILL  -- Generic error
-          , ordSendDeal         = 0
-          , ordSendOrder        = 0
-          , ordSendVolume       = 0.0
-          , ordSendPrice        = 0.0
-          , ordSendBid          = 0.0
-          , ordSendAsk          = 0.0
-          , ordSendComment      = "Failed to get positions: " ++ show err
-          , ordSendRequest_id   = 0
-          , ordSendRetcode_external = 0
-          }
-        Right positions -> do
-          -- Find the position to check its volume
-          let mPosition = find (\p -> trPosTicket p == pos) positions
-          case mPosition of
-            Just position -> do
-              let posVolume = fromDecimalNumber $ trPosVolume position
-                  reqVolume = fromDecimalNumber $ trReqVolume mqlReq
-              -- Route to appropriate close function
-              closeResult <- if abs (posVolume - reqVolume) < 0.0001  -- Close tolerance
-                             then positionCloseViaFile pos
-                             else positionClosePartialViaFile pos reqVolume
-
-              -- Convert result to OrderSendResult
-              return $ convertPositionCloseResult <$> closeResult
-            Nothing ->
-              -- Position not found
-              return $ Right $ OrderSendResult TRADE_RETCODE_INVALID 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Position not found: " ++ show pos) 0 0
+      positions <- positionsGet
+      
+      -- Find the position to check its volume
+      let mPosition = find (\p -> trPosTicket p == pos) positions
+      case mPosition of
+        Just position -> do
+          let posVolume = fromDecimalNumber $ trPosVolume position
+              reqVolume = fromDecimalNumber $ trReqVolume mqlReq
+          -- Route to appropriate close function (both now in ExceptT context)
+          success <- if abs (posVolume - reqVolume) < 0.0001  -- Close tolerance
+                     then positionCloseViaFile pos
+                     else positionClosePartialViaFile pos reqVolume
+          -- Convert result to OrderSendResult
+          return $ convertPositionCloseResult success
+        Nothing ->
+          -- Position not found - return error result via OrderSendResult
+          return $ OrderSendResult TRADE_RETCODE_INVALID 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Position not found: " ++ show pos) 0 0
 
     -- Position modify: action=SLTP + position > 0
     (TRADE_ACTION_SLTP, pos) | pos > 0 -> do
       let sl = fromDecimalNumber $ trReqSl mqlReq
           tp = fromDecimalNumber $ trReqTp mqlReq
-      modifyResult <- positionModifyViaFile pos sl tp
+      -- positionModifyViaFile now returns ExceptT, so use directly
+      success <- positionModifyViaFile pos sl tp
       -- Convert result to OrderSendResult
-      return $ convertPositionModifyResult <$> modifyResult
+      return $ convertPositionModifyResult success
 
     -- All other cases: use generic OrderSend handler
     _ -> do
@@ -1216,20 +1498,14 @@ orderSendViaFile mqlReq = do
                 Req.InvalidSymbol _ -> TRADE_RETCODE_INVALID
                 _                   -> TRADE_RETCODE_INVALID
               errMsg = "Invalid order send request: " ++ show err
-          in return $ Right $ OrderSendResult retcode 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 errMsg 0 0
+          in return $ OrderSendResult retcode 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 errMsg 0 0
         Right req -> do
-          mResponse <- sendRequestViaFile "order_send" req 5000
-          case mResponse of
-            Nothing ->
-              -- Timeout: return error result with TRADE_RETCODE_TIMEOUT
-              return $ Right $ OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Order send request timed out" 0 0
-            Just response -> do
-              let mOrderSend = decode (encode $ responseData response) :: Maybe OrderSendResponse
-              case mOrderSend of
-                Nothing ->
-                  -- Parse failure: return error result with TRADE_RETCODE_ERROR
-                  return $ Right $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "Failed to parse order send response" 0 0
-                Just resp -> return $ Right $ convertOrderSendResponse resp
+          mResponse <- liftIO $ sendRequestViaFile "order_send" req 5000
+          response <- liftMaybe (TimeoutError "order_send" 5000) mResponse
+          
+          let mOrderSend = decode (encode $ responseData response) :: Maybe OrderSendResponse
+          orderSendResp <- liftMaybe (ParseError "OrderSendResponse" "Failed to parse order send response") mOrderSend
+          return $ convertOrderSendResponse orderSendResp
 
 -- | Convert position close result to OrderSendResult
 convertPositionCloseResult :: Bool -> OrderSendResult
@@ -1255,12 +1531,11 @@ convertPositionModifyResult False =
 
 
 -- | Send order using Python bridge (original implementation)
-orderSendViaPython :: MqlTradeRequest -> IO (Either MT5Error OrderSendResult)
-orderSendViaPython request = do
+orderSendViaPython :: MqlTradeRequest -> ExceptT MT5Error IO OrderSendResult
+orderSendViaPython request = liftIO $ do
   send "ORDER_SEND"
   sendMqlTradeRequest request
-  res <- readOrderSendResult
-  return $ Right res
+  readOrderSendResult
 
 -- | Convert OrderSendResponse (7 fields) to OrderSendResult (10 fields)
 convertOrderSendResponse :: OrderSendResponse -> OrderSendResult
@@ -1358,7 +1633,7 @@ cancelOrderPOST orderTicket = do
 cancelAllOrdersPOST :: IO [OrderSendResult]
 cancelAllOrdersPOST = do
   -- Phase 1: Get all pending orders
-  ordersResult <- ordersGet Nothing Nothing
+  ordersResult <- runExceptT $ ordersGet Nothing Nothing
 
   case ordersResult of
     Left err -> do

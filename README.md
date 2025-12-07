@@ -147,32 +147,150 @@ main = startMT5 $ withPythonBridge defaultMT5Config
 
 **Recommendation**: Use PythonBridge by default (complete data), FileBridge only when performance critical.
 
-## Error Handling
+## Error Handling with ExceptT
 
-Automatic retry with exponential backoff:
+As of version 0.2.0.0, the API uses `ExceptT MT5Error IO` monad transformer for type-safe error handling with automatic error propagation.
+
+### Basic Usage
 
 ```haskell
-import MT5.Error (handleMT5Error, withTimeout, retryWithBackoff)
+import MT5.API (positionsGet, ordersGet)
+import Control.Monad.Except (runExceptT)
+
+main :: IO ()
+main = do
+  -- Use runExceptT to execute ExceptT actions
+  result <- runExceptT positionsGet
+  case result of
+    Left err -> putStrLn $ "Error: " ++ show err
+    Right positions -> print positions
+```
+
+### Composing Operations
+
+The key benefit of `ExceptT` is automatic error propagation - no need for manual case matching:
+
+```haskell
+import MT5.API (positionsGet, ordersGet, accountInfo)
+import Control.Monad.Except (runExceptT)
+
+-- Errors propagate automatically through the do-block
+tradingReport :: ExceptT MT5Error IO TradingReport
+tradingReport = do
+  account <- accountInfo         -- Automatically stops on error
+  positions <- positionsGet      -- Only runs if accountInfo succeeded
+  orders <- ordersGet Nothing Nothing
+  return $ TradingReport account positions orders
+
+main :: IO ()
+main = do
+  result <- runExceptT tradingReport
+  case result of
+    Left err -> putStrLn $ "Failed to generate report: " ++ show err
+    Right report -> print report
+```
+
+### Compatibility Wrappers
+
+For gradual migration, compatibility wrappers returning `Either` are provided:
+
+```haskell
+import MT5.API (positionsGetEither, ordersGetEither)
+
+main :: IO ()
+main = do
+  -- Old style - returns IO (Either MT5Error [TradePosition])
+  result <- positionsGetEither
+  case result of
+    Left err -> putStrLn $ "Error: " ++ show err
+    Right positions -> print positions
+```
+
+### Helper Functions
+
+```haskell
+import MT5.API (runWithDefault, runWithLogging)
+
+main :: IO ()
+main = do
+  -- Return default value on error
+  positions <- runWithDefault [] positionsGet
+  print positions
+
+  -- Log errors and return Maybe
+  mAccount <- runWithLogging accountInfo
+  case mAccount of
+    Nothing -> putStrLn "Failed to get account info"
+    Just account -> print account
+```
+
+### Error Types
+
+All operations can fail with these error types:
+
+- `TimeoutError Text Int` - Request timed out (operation name, timeout ms)
+- `ParseError Text Text` - Failed to parse MT5 response (type name, details)
+- `BrokerError TradeRetcode Text` - MT5 broker error (return code, message)
+- `PythonProcessError Text` - Python bridge communication failed
+
+### Migration from Either
+
+**Before (v0.1.x)**:
+```haskell
+main = do
+  result <- positionsGet  -- Returns IO (Either MT5Error [TradePosition])
+  case result of
+    Left err -> ...
+    Right positions -> ...
+```
+
+**After (v0.2.0+)**:
+```haskell
+main = do
+  result <- runExceptT positionsGet  -- ExceptT MT5Error IO [TradePosition]
+  case result of
+    Left err -> ...
+    Right positions -> ...
+```
+
+### Automatic Retry with ExceptT
+
+For retry logic, compose with retry utilities:
+
+```haskell
+import MT5.Error (retryWithBackoff, defaultRetryConfig)
+import Control.Monad.Except (runExceptT)
 
 main = do
-  result <- handleMT5Error $ do
-    -- Your MT5 operation
-    accountInfo
-
+  -- Wrap ExceptT action with retry logic
+  result <- retryWithBackoff defaultRetryConfig $ runExceptT positionsGet
   case result of
-    Right account -> print account
-    Left err -> putStrLn $ "Error: " ++ show err
+    RetrySuccess positions -> print positions
+    RetryFailure err -> putStrLn $ "Failed after retries: " ++ show err
 ```
 
 ## API Reference
 
 ### MT5.API
 
-- `accountInfo :: IO AccountInfo`
-- `positionsGet :: IO [TradePosition]`
-- `symbolInfo :: Symbol -> IO SymbolInfo`
-- `ordersGet :: Maybe Symbol -> Maybe Ticket -> IO [TradeOrder]`
-- `orderSend :: MqlTradeRequest -> IO OrderSendResult`
+**Core Functions** (ExceptT-based):
+- `positionsGet :: ExceptT MT5Error IO [TradePosition]`
+- `ordersGet :: Maybe Symbol -> Maybe Ticket -> ExceptT MT5Error IO [TradeOrder]`
+- `accountInfo :: ExceptT MT5Error IO AccountInfo`
+- `symbolInfo :: Symbol -> ExceptT MT5Error IO SymbolInfo`
+- `orderSend :: MqlTradeRequest -> ExceptT MT5Error IO OrderSendResult`
+
+**Compatibility Wrappers** (Either-based):
+- `positionsGetEither :: IO (Either MT5Error [TradePosition])`
+- `ordersGetEither :: Maybe Symbol -> Maybe Ticket -> IO (Either MT5Error [TradeOrder])`
+- `orderSendEither :: MqlTradeRequest -> IO (Either MT5Error OrderSendResult)`
+
+**Helper Functions**:
+- `liftMaybe :: MT5Error -> Maybe a -> ExceptT MT5Error IO a`
+- `eitherToExceptT :: Either MT5Error a -> ExceptT MT5Error IO a`
+- `maybeToExceptT :: MT5Error -> Maybe a -> ExceptT MT5Error IO a`
+- `runWithDefault :: a -> ExceptT e IO a -> IO a`
+- `runWithLogging :: Show e => ExceptT e IO a -> IO (Maybe a)`
 
 ### MT5.Config
 

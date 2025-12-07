@@ -4,6 +4,7 @@ module Main
   ) where
 
 import           Control.Exception
+import           Control.Monad.Trans.Except (runExceptT)
 import           Control.Monad
 import qualified Data.Text         as T
 import           Data.Time
@@ -117,7 +118,7 @@ main = do
       res <- initialize
       putStrLn $ "Initialize result: " ++ show res
       putStrLn "Account Info:"
-      accountInfo >>= print
+      runExceptT accountInfo >>= print
       -- putStrLn "Symbols:"
       -- symbolsGet Nothing >>= print
 
@@ -129,7 +130,7 @@ main = do
           putStrLn $ "Failed to initialize MT5: " ++ err
 
       putStrLn "Order send:"
-      res <- orderSend $ MqlTradeRequest
+      res <- runExceptT $ orderSend $ MqlTradeRequest
             { trReqAction = TRADE_ACTION_DEAL
             , trReqMagic = 12345
             , trReqOrder = 0
