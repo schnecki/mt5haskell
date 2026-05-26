@@ -1599,23 +1599,64 @@ intToTradeRetcode x =
     10046 -> TRADE_RETCODE_HEDGE_PROHIBITED
     _     -> TRADE_RETCODE_UNKNOWN
 
--- | Cancel a pending order by ticket number
---
--- Sends a cancellation request for the specified order ticket.
--- Only works for pending orders that haven't been executed yet.
---
--- Returns an 'OrderSendResult' with the cancellation outcome.
---
--- Corresponds to MetaTrader5.order_send() with TRADE_ACTION_REMOVE.
 -- | Cancel a pending order by ticket number.
 --
--- Sends the 'ORDER_CANCEL' command with the specified ticket number.
--- Returns an 'OrderSendResult' indicating cancellation outcome.
+-- Routes through 'positionManagementChannel' from Config:
+-- FileBridge: constructs TRADE_ACTION_REMOVE request via EA order_send action.
+-- PythonBridge: sends ORDER_CANCEL command directly to Python server.
 --
 -- Corresponds to MetaTrader5.order_send() with TRADE_ACTION_REMOVE.
 cancelOrderPOST :: Int            -- ^ Order ticket number to cancel
                 -> IO OrderSendResult -- ^ Cancellation result
 cancelOrderPOST orderTicket = do
+  config <- getConfig
+  case positionManagementChannel config of
+    FileBridge           -> cancelOrderViaFile orderTicket
+    FileBridgeCustom _ _ -> cancelOrderViaFile orderTicket
+    PythonBridge         -> cancelOrderViaPython orderTicket
+
+-- | Cancel pending order via file bridge (TRADE_ACTION_REMOVE via EA order_send).
+-- Must look up the order first to obtain its symbol, as mkOrderSendRequest
+-- requires a non-empty symbol even for TRADE_ACTION_REMOVE.
+cancelOrderViaFile :: Int -> IO OrderSendResult
+cancelOrderViaFile orderTicket = do
+  ordersResult <- runExceptT $ ordersGetViaFile Nothing Nothing
+  case ordersResult of
+    Left err ->
+      return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Failed to look up order symbol: " ++ show err) 0 0
+    Right orders ->
+      case filter (\o -> tradeOrderTicket o == orderTicket) orders of
+        [] ->
+          return $ OrderSendResult TRADE_RETCODE_INVALID_ORDER 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Order not found: " ++ show orderTicket) 0 0
+        (order:_) -> do
+          let sym = tradeOrderSymbol order
+              cancelReq = MqlTradeRequest
+                { trReqAction      = TRADE_ACTION_REMOVE
+                , trReqMagic       = 0
+                , trReqOrder       = fromIntegral orderTicket
+                , trReqSymbol      = sym
+                , trReqVolume      = DecimalNumber Nothing 0.0
+                , trReqPrice       = DecimalNumber Nothing 0.0
+                , trReqStoplimit   = DecimalNumber Nothing 0.0
+                , trReqSl          = DecimalNumber Nothing 0.0
+                , trReqTp          = DecimalNumber Nothing 0.0
+                , trReqDeviation   = 0
+                , trReqType        = ORDER_TYPE_BUY
+                , trReqTypeFilling = ORDER_FILLING_RETURN
+                , trReqTypeTime    = ORDER_TIME_GTC
+                , trReqExpiration  = 0
+                , trReqComment     = "Cancel order " ++ show orderTicket
+                , trReqPosition    = 0
+                , trReqPositionBy  = 0
+                }
+          result <- runExceptT $ orderSendViaFile cancelReq
+          case result of
+            Right r -> return r
+            Left err -> return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
+
+-- | Cancel pending order via Python bridge (ORDER_CANCEL command).
+cancelOrderViaPython :: Int -> IO OrderSendResult
+cancelOrderViaPython orderTicket = do
   send "ORDER_CANCEL"
   send (show orderTicket)
   readOrderSendResult
@@ -1632,30 +1673,45 @@ cancelOrderPOST orderTicket = do
 -- @since 0.1.0.0
 cancelAllOrdersPOST :: IO [OrderSendResult]
 cancelAllOrdersPOST = do
-  -- Phase 1: Get all pending orders
+  config <- getConfig
   ordersResult <- runExceptT $ ordersGet Nothing Nothing
-
   case ordersResult of
-    Left err -> do
-      -- Return a failed result if we can't get orders
-      return [OrderSendResult
-        { ordSendRetcode      = TRADE_RETCODE_INVALID_FILL  -- Generic error
-        , ordSendDeal         = 0
-        , ordSendOrder        = 0
-        , ordSendVolume       = 0.0
-        , ordSendPrice        = 0.0
-        , ordSendBid          = 0.0
-        , ordSendAsk          = 0.0
-        , ordSendComment      = "Failed to get orders: " ++ show err
-        , ordSendRequest_id   = 0
-        , ordSendRetcode_external = 0
-        }]
-    Right orders -> do
-      -- Phase 2: Cancel each order individually
-      mapM cancelSingleOrder orders
-  where
-    cancelSingleOrder :: TradeOrder -> IO OrderSendResult
-    cancelSingleOrder order = cancelOrderPOST (tradeOrderTicket order)
+    Left err ->
+      return [OrderSendResult TRADE_RETCODE_INVALID_FILL 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Failed to get orders: " ++ show err) 0 0]
+    Right orders ->
+      case positionManagementChannel config of
+        FileBridge           -> mapM cancelTradeOrderViaFile orders
+        FileBridgeCustom _ _ -> mapM cancelTradeOrderViaFile orders
+        PythonBridge         -> mapM (cancelOrderViaPython . tradeOrderTicket) orders
+
+-- | Cancel a pending order via FileBridge using its full TradeOrder record (avoids a second orders_get lookup).
+cancelTradeOrderViaFile :: TradeOrder -> IO OrderSendResult
+cancelTradeOrderViaFile order = do
+  let sym = tradeOrderSymbol order
+      orderTicket = tradeOrderTicket order
+      cancelReq = MqlTradeRequest
+        { trReqAction      = TRADE_ACTION_REMOVE
+        , trReqMagic       = 0
+        , trReqOrder       = fromIntegral orderTicket
+        , trReqSymbol      = sym
+        , trReqVolume      = DecimalNumber Nothing 0.0
+        , trReqPrice       = DecimalNumber Nothing 0.0
+        , trReqStoplimit   = DecimalNumber Nothing 0.0
+        , trReqSl          = DecimalNumber Nothing 0.0
+        , trReqTp          = DecimalNumber Nothing 0.0
+        , trReqDeviation   = 0
+        , trReqType        = ORDER_TYPE_BUY
+        , trReqTypeFilling = ORDER_FILLING_RETURN
+        , trReqTypeTime    = ORDER_TIME_GTC
+        , trReqExpiration  = 0
+        , trReqComment     = "Cancel order " ++ show orderTicket
+        , trReqPosition    = 0
+        , trReqPositionBy  = 0
+        }
+  result <- runExceptT $ orderSendViaFile cancelReq
+  case result of
+    Right r   -> return r
+    Left  err -> return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
 
 
 -- | Get candlestick data using time range
