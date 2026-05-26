@@ -79,16 +79,16 @@ data OrderSendResponse = OrderSendResponse
 instance FromJSON OrderSendResponse where
   parseJSON = withObject "OrderSendResponse" $ \o -> do
     success <- o .: "success"
+    retcode <- o .: "retcode"
+    comment <- o .:? "comment" .!= ""
     if success
-      then OrderSendResponse
-        <$> pure success
-        <*> o .: "retcode"
-        <*> o .: "deal"
-        <*> o .: "order"
-        <*> o .: "volume"
-        <*> o .: "price"
-        <*> o .:? "comment" .!= ""
-      else fail "Order send failed"
+      then OrderSendResponse success retcode
+             <$> o .: "deal"
+             <*> o .: "order"
+             <*> o .: "volume"
+             <*> o .: "price"
+             <*> pure comment
+      else return $ OrderSendResponse success retcode 0 0 (DecimalNumber Nothing 0.0) 0.0 comment
 
 
 -- | Response from position_close and position_close_partial
