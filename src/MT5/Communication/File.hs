@@ -9,6 +9,7 @@ module MT5.Communication.File
     , receiveResponse
     , sendRequestAndReceive
     , initializeFiles
+    , resetMT5Files
     , getMT5FilePaths
     , getMT5FilesDirDefault
     , getMT5FilesDirCustom
@@ -106,6 +107,18 @@ initializeFiles reqPath respPath = do
   unless respExists $ do
     $(logInfo) $ "Creating response file: " ++ respPath
     BSL.writeFile respPath "{}"
+
+
+-- | Reset MT5 file bridge by writing empty JSON to both request and response files.
+--
+-- Clears any stale modification timestamps so the next request is not blocked
+-- by an outdated response file.  Call this when a communication failure is detected
+-- (e.g. all cancel attempts return Left False) before retrying.
+resetMT5Files :: FilePath -> FilePath -> IO ()
+resetMT5Files reqPath respPath = do
+  $(logInfo) $ "Resetting MT5 file bridge: " ++ reqPath ++ ", " ++ respPath
+  BSL.writeFile reqPath  "{}"
+  BSL.writeFile respPath "{}"
 
 
 -- | Send request to MT5 via file (atomic write)

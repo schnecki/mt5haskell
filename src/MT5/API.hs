@@ -11,6 +11,7 @@ module MT5.API
     -- * Authentication
     initialize
   , loginAccount
+  , resetFileBridge
     -- * Account Information
   , accountInfo
     -- * Position Management
@@ -55,7 +56,9 @@ import           Control.Exception           (SomeException, try)
 import           Control.Monad               (replicateM)
 import           Control.Monad.Except        (ExceptT, runExceptT, throwError)
 import           Control.Monad.IO.Class      (liftIO)
-import           Data.Aeson                  (Value, decode, encode)
+import           Data.Aeson                  (Value, decode, encode, object,
+                                              withObject, (.=), (.:))
+import           Data.Aeson.Types            (parseMaybe)
 import qualified Data.ByteString.Lazy        as BSL
 import           Data.List                   (filter, find, isPrefixOf)
 import           Data.Maybe                  (fromMaybe)
@@ -71,6 +74,8 @@ import           System.IO.Unsafe            (unsafePerformIO)
 
 
 import           MT5.API.Internal            (sendRequestViaFile)
+import           MT5.Communication.File      (getMT5FilesDirDefault,
+                                              resetMT5Files)
 import           MT5.Communication           (receive, send, unpickle')
 import           MT5.Communication.Request   (mkAccountInfoRequest,
                                               mkOrderSendRequest,
@@ -303,6 +308,22 @@ initialize = do
   if res
     then return $ Right ()
     else Left <$> getError "failed to initialize to account #{}, error code: {}"
+
+-- | Reset the file bridge by writing empty JSON to both request and response files.
+--
+-- Clears stale modification timestamps so the next request is not blocked waiting
+-- for an outdated response.  Call this when repeated file-bridge requests fail
+-- (e.g. all cancel attempts return Left False) to restore a clean communication
+-- state before retrying.  Resolves file paths from the current global Config.
+resetFileBridge :: IO ()
+resetFileBridge = do
+  config <- getConfig
+  (reqPath, respPath) <- case communicationChannel config of
+    FileBridgeCustom r s -> return (r, s)
+    _ -> do
+      filesDir <- getMT5FilesDirDefault
+      return (filesDir ++ "/mt5_api_request.json", filesDir ++ "/mt5_api_response.json")
+  resetMT5Files reqPath respPath
 
 -- | Log in to a MetaTrader 5 account.
 --
@@ -1615,44 +1636,24 @@ cancelOrderPOST orderTicket = do
     FileBridgeCustom _ _ -> cancelOrderViaFile orderTicket
     PythonBridge         -> cancelOrderViaPython orderTicket
 
--- | Cancel pending order via file bridge (TRADE_ACTION_REMOVE via EA order_send).
--- Must look up the order first to obtain its symbol, as mkOrderSendRequest
--- requires a non-empty symbol even for TRADE_ACTION_REMOVE.
+-- | Cancel pending order via file bridge using the dedicated order_cancel EA action.
+-- Sends {"ticket": N} directly to HandleOrderCancel which calls trade.OrderDelete(ticket).
 cancelOrderViaFile :: Int -> IO OrderSendResult
 cancelOrderViaFile orderTicket = do
-  ordersResult <- runExceptT $ ordersGetViaFile Nothing Nothing
-  case ordersResult of
-    Left err ->
-      return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Failed to look up order symbol: " ++ show err) 0 0
-    Right orders ->
-      case filter (\o -> tradeOrderTicket o == orderTicket) orders of
-        [] ->
-          return $ OrderSendResult TRADE_RETCODE_INVALID_ORDER 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 ("Order not found: " ++ show orderTicket) 0 0
-        (order:_) -> do
-          let sym = tradeOrderSymbol order
-              cancelReq = MqlTradeRequest
-                { trReqAction      = TRADE_ACTION_REMOVE
-                , trReqMagic       = 0
-                , trReqOrder       = fromIntegral orderTicket
-                , trReqSymbol      = sym
-                , trReqVolume      = DecimalNumber Nothing 0.0
-                , trReqPrice       = DecimalNumber Nothing 0.0
-                , trReqStoplimit   = DecimalNumber Nothing 0.0
-                , trReqSl          = DecimalNumber Nothing 0.0
-                , trReqTp          = DecimalNumber Nothing 0.0
-                , trReqDeviation   = 0
-                , trReqType        = ORDER_TYPE_BUY
-                , trReqTypeFilling = ORDER_FILLING_RETURN
-                , trReqTypeTime    = ORDER_TIME_GTC
-                , trReqExpiration  = 0
-                , trReqComment     = "Cancel order " ++ show orderTicket
-                , trReqPosition    = 0
-                , trReqPositionBy  = 0
-                }
-          result <- runExceptT $ orderSendViaFile cancelReq
-          case result of
-            Right r -> return r
-            Left err -> return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 (show err) 0 0
+  let req = object ["ticket" .= orderTicket]
+  mResponse <- sendRequestViaFile "order_cancel" req 5000
+  case mResponse of
+    Nothing ->
+      return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0
+               ("Timeout waiting for order_cancel response for ticket: " ++ show orderTicket) 0 0
+    Just resp -> do
+      let mRetcode = parseMaybe (\v -> withObject "OrderCancelResponse" (\o -> o .: "retcode") v)
+                                (responseData resp)
+          retcode  = fromMaybe (-1 :: Int) mRetcode
+      return $ if retcode == 10009
+        then OrderSendResult TRADE_RETCODE_DONE  0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0 "" 0 0
+        else OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0
+               ("order_cancel retcode=" ++ show retcode) 0 0
 
 -- | Cancel pending order via Python bridge (ORDER_CANCEL command).
 cancelOrderViaPython :: Int -> IO OrderSendResult
