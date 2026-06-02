@@ -364,9 +364,17 @@ startMT5 config = do
   repoPath <- setupMT5LinuxRepository config'
   let config'' = config' { mt5linuxLocalPath = Just repoPath }
 
-  -- Check if this is a new installation by checking venv directory existence
+  -- Check if this is a new installation by checking venv directory existence.
+  -- Also handle stale venvs: if the directory exists but the Python binary is a
+  -- broken symlink (e.g. after a system Python upgrade removed the version the
+  -- venv was created against), delete the stale venv so it gets recreated.
   venvExists <- doesDirectoryExist (venvDir config'')
-  let newInstall = not venvExists
+  pythonBin  <- venvPython config''
+  venvValid  <- if venvExists then doesFileExist pythonBin else return False
+  when (venvExists && not venvValid) $ do
+    $(logInfo) $ "Stale venv detected (broken Python binary: " ++ pythonBin ++ "). Removing."
+    removeDirectoryRecursive (venvDir config'')
+  let newInstall = not venvExists || not venvValid
 
   -- Install Windows Python libraries first, then create/setup Linux venv
   config''' <- setupPythonEnvironment config'' newInstall
