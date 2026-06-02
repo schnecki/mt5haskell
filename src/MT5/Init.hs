@@ -37,6 +37,8 @@ import           System.Exit
 import           System.FilePath          ((</>))
 import           System.IO
 import           System.IO.Temp           (writeSystemTempFile)
+import           System.Posix.Process     (getProcessID)
+import           System.Posix.Types       (CPid (..))
 import           System.Process           hiding (env)
 import           Text.Regex
 
@@ -59,17 +61,55 @@ mt5ServerThread :: IORef (ThreadId, Handle, Handle)
 mt5ServerThread = unsafePerformIO $ newIORef (error "Not yet initialized" :: (ThreadId, Handle, Handle))
 {-# NOINLINE mt5ServerThread #-}
 
+-- | Path to the active PID lock file; empty string means no lock held.
+mt5LockFilePath :: IORef FilePath
+mt5LockFilePath = unsafePerformIO $ newIORef ""
+{-# NOINLINE mt5LockFilePath #-}
 
--- | Create python process
+-- | Returns True when the given OS PID has an entry under /proc (Linux-only).
+isPidAlive :: Int -> IO Bool
+isPidAlive pid = doesDirectoryExist ("/proc/" ++ show pid)
+
+-- | System-wide lock path, fixed in /tmp so it is shared across all instances
+-- regardless of working directory or venv location.
+mt5SystemLockPath :: FilePath
+mt5SystemLockPath = "/tmp/mt5haskell.lock"
+
+-- | Acquire a system-wide exclusive lock by writing this process's PID.
+-- Fails with an error when another live process already holds the lock.
+acquireMT5Lock :: Config -> IO ()
+acquireMT5Lock _config = do
+  let lockPath = mt5SystemLockPath
+  writeIORef mt5LockFilePath lockPath
+  lockExists <- doesFileExist lockPath
+  when lockExists $ do
+    content <- readFile lockPath
+    case reads content :: [(Int, String)] of
+      [(pid, _)] -> do
+        alive <- isPidAlive pid
+        when alive $
+          error $ "Another MT5 instance is already running (PID " ++ show pid ++
+                  "). Stop it or remove " ++ lockPath
+        removeFile lockPath
+      _ -> removeFile lockPath
+  CPid rawPid <- getProcessID
+  writeFile lockPath (show rawPid)
+
+-- | Release the PID lock acquired by 'acquireMT5Lock'.
+releaseMT5Lock :: IO ()
+releaseMT5Lock = do
+  lockPath <- readIORef mt5LockFilePath
+  unless (null lockPath) $ do
+    exists <- doesFileExist lockPath
+    when exists $ removeFile lockPath
+
+-- | Create python process, always writing the embedded server script so that
+-- changes to the embedded source are reflected without manual venv cleanup.
 createPythonProcess :: Config -> IO ()
 createPythonProcess config = do
-  -- NOTE: Python server file is written to venv directory (not /tmp/) for better isolation
   python <- venvPython config
-  -- pythonPath <- writeSystemTempFile "mt5haskell_python_server" (T.unpack (Encoding.decodeLatin1 pythonCode))
   let pythonPath = venvDir config </> "python_server.py"
-  fileExists <- doesFileExist pythonPath
-  unless fileExists $
-    writeFile pythonPath (T.unpack (Encoding.decodeLatin1 pythonCode))
+  writeFile pythonPath (T.unpack (Encoding.decodeLatin1 pythonCode))
   (Just inp, Just out, _, phandle) <-
     createProcess (proc python [pythonPath]) {cwd = Just ".", std_in = CreatePipe, std_out = CreatePipe}
   writeIORef pyProc $ Just $ PyProc inp out phandle pythonPath
@@ -353,7 +393,8 @@ pipInstallWithEnv env repoPath package = do
 -- Overwrites the global config.
 startMT5 :: Config -> IO Config
 startMT5 config = do
-  -- 0. Write python code
+  -- 0. Acquire exclusive per-venv lock (fails if another instance is running)
+  acquireMT5Lock config
 
   -- 1. Auto-detect environment if not specified
   config' <- if isNothing (executionEnv config) || isNothing (pythonEnv config)
@@ -504,3 +545,4 @@ stopMT5 = do
       cleanupProcess (Just inp, Just out, Nothing, pHandle)
       fileExists <- doesFileExist pythonPath
       when fileExists $ removeFile pythonPath
+  releaseMT5Lock
