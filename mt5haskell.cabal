@@ -51,6 +51,7 @@ library
       MT5.Data.OrderTypeFilling
       MT5.Data.OrderTypeTime
       MT5.Data.SymbolInfo
+      MT5.Data.Tick
       MT5.Data.TradeOrder
       MT5.Data.TradePosition
       MT5.Data.TradeRequestAction

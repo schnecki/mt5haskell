@@ -11,6 +11,7 @@ module MT5.Data
   , module MT5.Data.SymbolInfo
   , module MT5.Data.OrderSendResult
   , module MT5.Data.CurrentPrice
+  , module MT5.Data.Tick
   ) where
 
 import           MT5.Data.AccountInfo
@@ -22,6 +23,7 @@ import           MT5.Data.OrderType
 import           MT5.Data.OrderTypeFilling
 import           MT5.Data.OrderTypeTime
 import           MT5.Data.SymbolInfo
+import           MT5.Data.Tick
 import           MT5.Data.TradeOrder
 import           MT5.Data.TradePosition
 import           MT5.Data.TradeRequestAction

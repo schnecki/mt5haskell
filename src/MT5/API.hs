@@ -34,6 +34,8 @@ module MT5.API
   , getCandleDataRange
   , getCandleDataFrom
   , getCandleDataRecent
+  , copyTicksFrom
+  , copyTicksRange
     -- * ExceptT Helper Functions
   , liftMaybe
   , eitherToExceptT
@@ -115,6 +117,7 @@ import           MT5.Data.AccountInfo        (AccountMarginMode (..),
                                               AccountTradeMode (..))
 import           MT5.Data.Candle             (MT5Candle (MT5Candle),
                                               MT5CandleData (MT5CandleData))
+import           MT5.Data.Tick               (MT5Tick (..))
 import           MT5.Data.DecimalNumber      (DecimalNumber (..),
                                               mkDecimalNumberFromDouble)
 import           MT5.Data.Granularity        (MT5Granularity, toMT5TimeframeInt)
@@ -1838,3 +1841,58 @@ parseCandleDataFromFields symbol = do
       <*> (unpickle' "Int" <$> receive)                        -- tick_volume
       <*> (unpickle' "Int" <$> receive)                        -- spread
       <*> (unpickle' "Double" <$> receive)                     -- real_volume
+
+-- | Retrieve ticks starting at a given UTC time, up to @count@ ticks.
+--
+-- Wraps MT5's @copy_ticks_from@. Use @copyTicksFlagsInfo@ (bid/ask quotes) or
+-- @copyTicksFlagsAll@ (all tick types). Returns ticks in chronological order.
+copyTicksFrom :: String    -- ^ Symbol (e.g. "US30.pro")
+              -> UTCTime   -- ^ Start time (inclusive)
+              -> Int       -- ^ Maximum number of ticks to return
+              -> Int       -- ^ Tick type flags (see 'MT5.Data.Tick')
+              -> IO (Either String [MT5Tick])
+copyTicksFrom symbol fromTime count flags = do
+  send "COPY_TICKS_FROM"
+  send symbol
+  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+  send $ show count
+  send $ show flags
+  result <- unpickle' "String" <$> receive
+  if "error:" `isPrefixOf` result
+    then return $ Left (drop 6 result)
+    else parseTickDataFromFields
+
+-- | Retrieve all ticks within a UTC time range.
+--
+-- Wraps MT5's @copy_ticks_range@. Returns ticks in chronological order.
+copyTicksRange :: String    -- ^ Symbol
+               -> UTCTime   -- ^ Range start (inclusive)
+               -> UTCTime   -- ^ Range end (inclusive)
+               -> Int       -- ^ Tick type flags (see 'MT5.Data.Tick')
+               -> IO (Either String [MT5Tick])
+copyTicksRange symbol fromTime toTime flags = do
+  send "COPY_TICKS_RANGE"
+  send symbol
+  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
+  send $ show flags
+  result <- unpickle' "String" <$> receive
+  if "error:" `isPrefixOf` result
+    then return $ Left (drop 6 result)
+    else parseTickDataFromFields
+
+parseTickDataFromFields :: IO (Either String [MT5Tick])
+parseTickDataFromFields = do
+  tickCount <- unpickle' "Int" <$> receive
+  ticks <- replicateM tickCount readSingleTick
+  return $ Right ticks
+  where
+    readSingleTick :: IO MT5Tick
+    readSingleTick = MT5Tick
+      <$> (unpickle' "Integer" <$> receive)  -- time_msc
+      <*> (unpickle' "Double"  <$> receive)  -- bid
+      <*> (unpickle' "Double"  <$> receive)  -- ask
+      <*> (unpickle' "Double"  <$> receive)  -- last
+      <*> (unpickle' "Int"     <$> receive)  -- volume
+      <*> (unpickle' "Int"     <$> receive)  -- flags
+      <*> (unpickle' "Double"  <$> receive)  -- volume_real
