@@ -84,7 +84,9 @@ pythonCode = disableDebugging (str2Bs mainPyContent)
   where
     disableDebugging inp =
         let (bef, after) = B.breakSubstring (str2Bs "DEBUG=True") inp
-         in bef `B.append` str2Bs "DEBUG=False"
-              `B.append` B.drop (B.length (str2Bs "DEBUG=True")) after
+         in if B.null after
+                then inp  -- "DEBUG=True" not present; nothing to replace
+                else bef `B.append` str2Bs "DEBUG=False"
+                       `B.append` B.drop (B.length (str2Bs "DEBUG=True")) after
     str2Bs :: String -> B.ByteString
     str2Bs = Encoding.encodeUtf8 . T.pack

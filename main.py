@@ -1,5 +1,6 @@
 
 import json
+import signal
 import time
 import struct
 import pickle
@@ -17,11 +18,21 @@ mt5 = MetaTrader5()
 
 DEBUG=False
 SOCKET_PATH = '/tmp/mt5haskell.sock'
+# Optional PID of the RPyC server started by the owning Haskell process.
+# When the last client disconnects we send SIGTERM to clean it up.
+RPYC_PID = int(sys.argv[1]) if len(sys.argv) > 1 else None
 
 # Global MT5 lock: MT5 API is not thread-safe; serialise all calls.
 _mt5_lock = threading.Lock()
 # Thread-local storage for per-connection I/O handles.
 _tlocal = threading.local()
+# Idle-exit: if no real clients are connected for this many seconds, shut down.
+IDLE_TIMEOUT = 300
+
+# Reference count of active client connections and timestamp of last disconnect.
+_client_count     = 0
+_client_lock      = threading.Lock()
+_last_client_time = time.time()
 
 
 def _rl():
@@ -224,15 +235,35 @@ def sendSymbol(xs):
     sendLog(xs, 'path')
 
 
+def _shutdown_daemon():
+    """Shut down MT5, the server socket, and the RPyC process (if any)."""
+    mt5.shutdown()
+    try: _srv.close()
+    except Exception: pass
+    if RPYC_PID is not None:
+        try: os.kill(RPYC_PID, signal.SIGTERM)
+        except OSError: pass
+    os._exit(0)
+
+
 def _handle_client(conn):
     """Handle a single client connection in its own thread."""
+    global _client_count
     _tlocal.conn = conn
     _tlocal.fin  = conn.makefile('r', encoding='utf-8')
+    # Delay counting until the client sends its first command so that
+    # connectivity probes (connect + immediate close) are not mistaken for
+    # real clients and do not trigger _shutdown_daemon prematurely.
+    registered = False
     try:
         while True:
             line = _tlocal.fin.readline()
             if not line:
                 break  # client closed connection
+            if not registered:
+                with _client_lock:
+                    _client_count += 1
+                registered = True
             if DEBUG:
                 sys.stderr.write('Py Input: ' + str(line) + '\n')
                 sys.stderr.flush()
@@ -552,15 +583,18 @@ def _handle_client(conn):
                 elif line == 'ERROR':
                     formatString = _rl()
                     send(formatString.format(account, mt5.last_error()))
+                elif line == 'HELLO':
+                    # Handshake sent immediately after connect.
+                    # Registers the client in the reference count before
+                    # any real MT5 command arrives, closing the window where
+                    # an owner QUIT could see count==0 while a client is
+                    # connected-but-not-yet-counted.
+                    send('WELCOME')
+                    # No break — continue the command loop.
                 elif line == 'QUIT':
                     # Disconnect this client only; daemon keeps running.
                     send('Ciao!')
                     break
-                elif line == 'SHUTDOWN':
-                    # Shut down the daemon entirely (sent by the owning process).
-                    mt5.shutdown()
-                    send('Shutdown!')
-                    os._exit(0)
                 else:
                     send('Unknown command: ' + line)
     except EOFError:
@@ -571,23 +605,50 @@ def _handle_client(conn):
             sys.stderr.flush()
     finally:
         try: _tlocal.fin.close()
-        except: pass
+        except Exception: pass
         try: conn.close()
-        except: pass
+        except Exception: pass
+        if registered:
+            with _client_lock:
+                global _last_client_time
+                _client_count -= 1
+                if _client_count == 0:
+                    _last_client_time = time.time()
 
 
 # Initialize MT5 once at daemon start.
 mt5.initialize()
 
-# Remove stale socket file if present.
+# Remove stale socket file if present, but only if not connectable.
+# Unconditional unlink would disconnect a live daemon for existing clients.
 if os.path.exists(SOCKET_PATH):
-    os.remove(SOCKET_PATH)
+    _probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        _probe.connect(SOCKET_PATH)
+        _probe.close()
+        sys.stderr.write('error: MT5 daemon already running on ' + SOCKET_PATH + '\n')
+        sys.stderr.flush()
+        sys.exit(1)
+    except OSError:
+        _probe.close()
+        os.remove(SOCKET_PATH)
 
 _srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 _srv.bind(SOCKET_PATH)
 _srv.listen(5)
+# Restrict to owner only; prevents other local users from issuing trading commands.
+os.chmod(SOCKET_PATH, 0o700)
+# Use a short accept timeout so the idle-exit check runs periodically.
+_srv.settimeout(10.0)
 
 while True:
-    conn, _ = _srv.accept()
+    try:
+        conn, _ = _srv.accept()
+    except socket.timeout:
+        # No new connection in this window; check idle-exit condition.
+        with _client_lock:
+            if _client_count == 0 and (time.time() - _last_client_time) > IDLE_TIMEOUT:
+                _shutdown_daemon()
+        continue
     t = threading.Thread(target=_handle_client, args=(conn,), daemon=True)
     t.start()

@@ -7,7 +7,7 @@ module MT5.Communication.Socket
 
 import           Control.Exception  (SomeException, try)
 import           Network.Socket     (Family (..), SockAddr (..), SocketType (..),
-                                     close, connect, defaultProtocol, socket)
+                                     connect, defaultProtocol, socket)
 import           Network.Socket     (socketToHandle)
 import           System.IO          (Handle, IOMode (..), hClose)
 
