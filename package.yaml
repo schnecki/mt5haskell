@@ -35,6 +35,7 @@ dependencies:
 - file-embed
 - temporary
 - aeson        # JSON encoding/decoding for file communication
+- network      # Unix domain socket client
 - unix         # For atomic file operations (renameFile is POSIX)
 - mtl          # For ExceptT monad transformer
 - transformers # For monad transformer support
