@@ -185,6 +185,7 @@ connectToDaemon = do
     writeIORef pyProc $ Just $ PyProc h h (hClose h)
     send "HELLO"
     void receive
+    registerReconnectAction connectToDaemon
 
 
 -- =====================================================================
