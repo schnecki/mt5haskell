@@ -35,6 +35,7 @@ library
       MT5.Communication.Python
       MT5.Communication.Request
       MT5.Communication.Response
+      MT5.Communication.Socket
       MT5.Communication.Types
       MT5.Config
       MT5.Data
@@ -78,6 +79,7 @@ library
     , file-embed
     , filepath
     , mtl
+    , network
     , process
     , python-pickle
     , regex-compat
@@ -109,6 +111,7 @@ executable mt5haskell
     , filepath
     , mt5haskell
     , mtl
+    , network
     , process
     , python-pickle
     , regex-compat
@@ -166,6 +169,7 @@ test-suite mt5haskell-test
     , hspec-discover
     , mt5haskell
     , mtl
+    , network
     , process
     , python-pickle
     , quickcheck-instances

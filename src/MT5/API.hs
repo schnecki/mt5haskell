@@ -78,7 +78,7 @@ import           System.IO.Unsafe            (unsafePerformIO)
 import           MT5.API.Internal            (sendRequestViaFile)
 import           MT5.Communication.File      (getMT5FilesDirDefault,
                                               resetMT5Files)
-import           MT5.Communication           (receive, send, unpickle')
+import           MT5.Communication           (receive, send, unpickle', withMT5Lock)
 import           MT5.Communication.Request   (mkAccountInfoRequest,
                                               mkOrderSendRequest,
                                               mkOrdersGetRequest,
@@ -436,7 +436,7 @@ accountInfoViaPython = do
   liftIO $ $(logInfoText) "Fetching account info via PythonBridge"
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- liftIO $ try $ do
+  result <- liftIO $ withMT5Lock $ try $ do
     send "ACCOUNT_INFO"
     AccountInfo
       <$> (unpickle' "Int" <$> receive)
@@ -483,7 +483,7 @@ accountInfoViaPython = do
 -- Corresponds to MetaTrader5.last_error().
 getError :: String             -- ^ Format string for the error request
          -> IO String
-getError formatString = do
+getError formatString = withMT5Lock $ do
   send "ERROR"
   send formatString
   unpickle' "String" <$> receive
@@ -587,7 +587,7 @@ positionsGetViaPython = do
   liftIO $ $(logInfoText) "Fetching positions via PythonBridge"
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- liftIO $ try $ do
+  result <- liftIO $ withMT5Lock $ try $ do
     send "POSITIONS_GET"
     len <- unpickle' "Int" <$> receive
     replicateM len
@@ -963,7 +963,7 @@ ordersGetViaPython mInstr mTicket = do
   liftIO $ $(logInfo) $ "Fetching orders via PythonBridge" ++ maybe "" (\s -> " for symbol: " ++ s) mInstr
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- liftIO $ try $ do
+  result <- liftIO $ withMT5Lock $ try $ do
     case (mInstr, mTicket) of
       (Just instr, Nothing) -> do
         send "ORDERS_GET_SYMBOL"
@@ -1031,7 +1031,7 @@ convertOrderInfoResponse resp =
 --
 symbolsGet :: Maybe SymbolGroup       -- ^ Predefined or custom symbol group
            -> IO [SymbolInfo]
-symbolsGet mGroup =
+symbolsGet mGroup = withMT5Lock $
   case mGroup of
     Just group -> do
       send "SYMBOLS_GET_GROUP"
@@ -1106,7 +1106,7 @@ symbolInfoViaPython symbol = do
   liftIO $ $(logInfo) $ "Fetching symbol info via PythonBridge for: " ++ symbol
 
   -- Wrap in try block to catch any exceptions (Option B approach)
-  result <- liftIO $ try $ do
+  result <- liftIO $ withMT5Lock $ try $ do
     send "SYMBOL_INFO"
     send symbol
     readSymbolInfo
@@ -1556,7 +1556,7 @@ convertPositionModifyResult False =
 
 -- | Send order using Python bridge (original implementation)
 orderSendViaPython :: MqlTradeRequest -> ExceptT MT5Error IO OrderSendResult
-orderSendViaPython request = liftIO $ do
+orderSendViaPython request = liftIO $ withMT5Lock $ do
   send "ORDER_SEND"
   sendMqlTradeRequest request
   readOrderSendResult
