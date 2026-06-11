@@ -97,7 +97,8 @@ import           MT5.Communication.Response  (AccountInfoResponse (..),
                                               PositionModifyResponse (..),
                                               PositionsGetResponse (..),
                                               SymbolInfoResponse (..))
-import           MT5.Communication.Types     (Response (..), responseData)
+import           MT5.Communication.Types     (ErrorResponse (..), Response (..),
+                                              responseData)
 import           MT5.Config                  (CommunicationChannel (..),
                                               Login (..), communicationChannel,
                                               getConfig,
@@ -121,7 +122,7 @@ import           MT5.Data.Tick               (MT5Tick (..))
 import           MT5.Data.DecimalNumber      (DecimalNumber (..),
                                               mkDecimalNumberFromDouble)
 import           MT5.Data.Granularity        (MT5Granularity, toMT5TimeframeInt)
-import           MT5.Data.OrderSendResult    (TradeRetcode (..))
+import           MT5.Data.OrderSendResult    (TradeRetcode (..), toTradeRetcode)
 import           MT5.Data.OrderState         (OrderState (..))
 import           MT5.Data.OrderType          (OrderType (..))
 import           MT5.Data.OrderTypeFilling   (OrderTypeFilling (..))
@@ -185,6 +186,56 @@ eitherToExceptT (Right x)  = return x
 -- @since 0.2.0.0
 maybeToExceptT :: MT5Error -> Maybe a -> ExceptT MT5Error IO a
 maybeToExceptT = liftMaybe
+
+-- | Lift a parsed-success result, classifying an error response from the MT5 EA
+-- into a typed 'MT5Error' (e.g. 'MarketClosed', 'TradingDisabled', 'BrokerError')
+-- BEFORE falling back to a generic 'ParseError'.
+--
+-- The MT5 EA emits two shapes of responses:
+--
+--   * Success: @{"success": true, ...payload...}@ — parses into the response's
+--     dedicated @FromJSON@ instance.
+--   * Failure: @{"success": false, "error_code": <int>, "error_message": "..."}@
+--     — would fail to parse as the success shape because required fields are
+--     missing, producing a generic 'ParseError'.  Callers (e.g. live-trading
+--     retry loops) cannot tell from a 'ParseError' whether to retry or give up.
+--
+-- This helper inspects @responseSuccess@ first; on failure it decodes the body
+-- as 'ErrorResponse' and constructs a structured error so 'isRetryableError'
+-- correctly returns 'False' for non-retryable conditions like a closed market.
+--
+-- @since 0.2.0.0
+liftResponseOrTypedError
+  :: Text                    -- ^ Operation / response-type name (for diagnostics)
+  -> Response                -- ^ Raw response from the MT5 EA
+  -> Maybe a                 -- ^ Result of decoding @responseData@ as the success shape
+  -> ExceptT MT5Error IO a
+liftResponseOrTypedError respName response mResp
+  | responseSuccess response = liftMaybe (ParseError respName (T.pack (show response))) mResp
+  | otherwise =
+      let raw = T.pack (show response)
+          mErr = decode (encode (responseData response)) :: Maybe ErrorResponse
+      in case mErr of
+           Just (ErrorResponse code msg) ->
+             throwError (classifyErrorResponse respName code msg)
+           Nothing ->
+             -- success=false but no error_code/error_message; surface as InvalidResponse
+             -- rather than ParseError so retries still bail out fast.
+             throwError (InvalidResponse (respName <> ": success=false without error fields; raw=" <> raw))
+
+-- | Map an MT5 EA @error_code@ to the most specific 'MT5Error' constructor.
+-- Falls back to 'BrokerError' with the parsed 'TradeRetcode' (which may be
+-- 'TRADE_RETCODE_UNKNOWN' for codes outside the standard retcode range).
+classifyErrorResponse :: Text -> Int -> Text -> MT5Error
+classifyErrorResponse respName code msg =
+  case code of
+    10018 -> MarketClosed     msg
+    10017 -> TradingDisabled  msg
+    10019 -> InsufficientFunds 0 0  -- amounts unknown from EA payload
+    _     ->
+      let retcode = toTradeRetcode code
+          context = respName <> ": " <> msg
+      in BrokerError retcode context
 
 -- ==============================================================================
 -- COMPATIBILITY WRAPPERS (ExceptT → Either)
@@ -392,7 +443,7 @@ accountInfoViaFile = do
 
   -- Parse the response data as AccountInfoResponse
   let mAccountInfo = decode (encode $ responseData response) :: Maybe AccountInfoResponse
-  accResp <- liftMaybe (ParseError "AccountInfoResponse" (T.pack $ show response)) mAccountInfo
+  accResp <- liftResponseOrTypedError "AccountInfoResponse" response mAccountInfo
   
   liftIO $ $(logDebugText) "Successfully parsed account info response"
   return $ convertAccountInfoResponse accResp
@@ -547,7 +598,7 @@ positionsGetViaFile mSymbol = do
 
   -- Parse the response data as PositionsGetResponse
   let mPositionsResp = decode (encode $ responseData response) :: Maybe PositionsGetResponse
-  posResp <- liftMaybe (ParseError "PositionsGetResponse" (T.pack $ show response)) mPositionsResp
+  posResp <- liftResponseOrTypedError "PositionsGetResponse" response mPositionsResp
 
   if positionsGetSuccess posResp
     then do
@@ -665,7 +716,7 @@ positionCloseViaFile ticket = do
   response <- liftMaybe (TimeoutError "position_close" 5000) mResponse
   
   let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
-  resp <- liftMaybe (ParseError "PositionCloseResponse" (T.pack $ show response)) mResp
+  resp <- liftResponseOrTypedError "PositionCloseResponse" response mResp
   return $ positionCloseSuccess resp
 
 -- | Close a position via Python bridge
@@ -757,7 +808,7 @@ positionClosePartialViaFile ticket volume = do
   response <- liftMaybe (TimeoutError "position_close_partial" 5000) mResponse
   
   let mResp = decode (encode $ responseData response) :: Maybe PositionCloseResponse
-  resp <- liftMaybe (ParseError "PositionCloseResponse" (T.pack $ show response)) mResp
+  resp <- liftResponseOrTypedError "PositionCloseResponse" response mResp
   return $ positionCloseSuccess resp
 
 -- | Modify a position's stop-loss and take-profit levels.
@@ -804,7 +855,7 @@ positionModifyViaFile ticket sl tp = do
   response <- liftMaybe (TimeoutError "position_modify" 5000) mResponse
   
   let mResp = decode (encode $ responseData response) :: Maybe PositionModifyResponse
-  resp <- liftMaybe (ParseError "PositionModifyResponse" (T.pack $ show response)) mResp
+  resp <- liftResponseOrTypedError "PositionModifyResponse" response mResp
   return $ positionModifySuccess resp
 
 -- | Close partial position via Python bridge
@@ -947,7 +998,7 @@ ordersGetViaFile mSymbol _mTicket = do
   response <- liftMaybe (TimeoutError "orders_get" 5000) mResponse
 
   let mOrders = decode (encode $ responseData response) :: Maybe OrdersGetResponse
-  resp <- liftMaybe (ParseError "OrdersGetResponse" (T.pack $ show response)) mOrders
+  resp <- liftResponseOrTypedError "OrdersGetResponse" response mOrders
 
   if ordersGetSuccess resp
     then do
@@ -1095,7 +1146,7 @@ symbolInfoViaFile symbol = do
   response <- liftMaybe (TimeoutError (T.pack $ "symbol_info:" ++ symbol) 5000) mResponse
   
   let mSymbolInfo = decode (encode $ responseData response) :: Maybe SymbolInfoResponse
-  resp <- liftMaybe (ParseError "SymbolInfoResponse" (T.pack $ show response)) mSymbolInfo
+  resp <- liftResponseOrTypedError "SymbolInfoResponse" response mSymbolInfo
   
   liftIO $ $(logDebug) $ "Successfully parsed symbol info for: " ++ symbol
   return $ convertSymbolInfoResponse resp
@@ -1528,7 +1579,7 @@ orderSendViaFile mqlReq = do
           response <- liftMaybe (TimeoutError "order_send" 5000) mResponse
           
           let mOrderSend = decode (encode $ responseData response) :: Maybe OrderSendResponse
-          orderSendResp <- liftMaybe (ParseError "OrderSendResponse" "Failed to parse order send response") mOrderSend
+          orderSendResp <- liftResponseOrTypedError "OrderSendResponse" response mOrderSend
           return $ convertOrderSendResponse orderSendResp
 
 -- | Convert position close result to OrderSendResult
