@@ -58,8 +58,9 @@ import           Control.Exception           (SomeException, try)
 import           Control.Monad               (replicateM)
 import           Control.Monad.Except        (ExceptT, runExceptT, throwError)
 import           Control.Monad.IO.Class      (liftIO)
-import           Data.Aeson                  (Value, decode, encode, object,
-                                              withObject, (.=), (.:))
+import           Data.Aeson                  (FromJSON (..), Value, decode,
+                                              encode, object, withObject,
+                                              (.=), (.:))
 import           Data.Aeson.Types            (parseMaybe)
 import qualified Data.ByteString.Lazy        as BSL
 import           Data.List                   (filter, find, isPrefixOf)
@@ -214,7 +215,7 @@ liftResponseOrTypedError respName response mResp
   | responseSuccess response = liftMaybe (ParseError respName (T.pack (show response))) mResp
   | otherwise =
       let raw = T.pack (show response)
-          mErr = decode (encode (responseData response)) :: Maybe ErrorResponse
+          mErr = parseMaybe parseJSON (responseData response) :: Maybe ErrorResponse
       in case mErr of
            Just (ErrorResponse code msg) ->
              throwError (classifyErrorResponse respName code msg)
@@ -231,7 +232,7 @@ classifyErrorResponse respName code msg =
   case code of
     10018 -> MarketClosed     msg
     10017 -> TradingDisabled  msg
-    10019 -> InsufficientFunds 0 0  -- amounts unknown from EA payload
+    10019 -> BrokerError (toTradeRetcode 10019) (respName <> ": " <> msg)
     _     ->
       let retcode = toTradeRetcode code
           context = respName <> ": " <> msg
