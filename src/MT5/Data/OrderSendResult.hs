@@ -3,6 +3,7 @@ module MT5.Data.OrderSendResult
     , readOrderSendResult
     , tradeRetcodeNumber
     , explainTradeRetcodes
+    , toTradeRetcode
     , TradeRetcode(..)
     ) where
 
