@@ -6,6 +6,7 @@ module MT5.Init
     ( startMT5
     , stopMT5
     , mt5Started
+    , isSocketAvailable
     , detectExecutionEnvironment
     , detectPythonEnvironments
     , selectBestPythonEnvironment
