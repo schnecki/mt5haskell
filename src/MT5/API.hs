@@ -36,6 +36,7 @@ module MT5.API
   , getCandleDataRecent
   , copyTicksFrom
   , copyTicksRange
+  , historyDealsRealizedForPosition
     -- * ExceptT Helper Functions
   , liftMaybe
   , eitherToExceptT
@@ -1948,3 +1949,36 @@ parseTickDataFromFields = do
       <*> (unpickle' "Int"     <$> receive)  -- volume
       <*> (unpickle' "Int"     <$> receive)  -- flags
       <*> (unpickle' "Double"  <$> receive)  -- volume_real
+
+-- | Net realized profit/loss for a closed position, summed across all of its
+-- deals (opening and closing) as @profit + swap + commission + fee@.
+--
+-- Wraps MT5's @history_deals_get(position=ticket)@. The returned figure matches
+-- the position's booked P&L in the MT5 terminal, unlike the last-observed
+-- floating profit which excludes commission/swap and reflects the mid/opposite
+-- quote at snapshot time rather than the actual fill.
+--
+-- Returns @Left@ with a message when the bridge reports an error, and
+-- @Right 0.0@ when the position has no deals in loaded history.
+historyDealsRealizedForPosition :: Integer  -- ^ MT5 position ticket
+                                -> IO (Either String Double)
+historyDealsRealizedForPosition positionId = withMT5Lock $ do
+  outcome <- try $ do
+    send "HISTORY_DEALS_GET_POSITION"
+    send (show positionId)
+    status <- unpickle' "String" <$> receive
+    if "error:" `isPrefixOf` status
+      then return $ Left (drop 6 status)
+      else do
+        n <- unpickle' "Int" <$> receive
+        vals <- replicateM n $ do
+          profit     <- unpickle' "Double" <$> receive
+          swap       <- unpickle' "Double" <$> receive
+          commission <- unpickle' "Double" <$> receive
+          fee        <- unpickle' "Double" <$> receive
+          (_entry :: Int) <- unpickle' "Int" <$> receive
+          return (profit + swap + commission + fee)
+        return $ Right (sum vals)
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
