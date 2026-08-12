@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 module MT5.Communication.PyProc
     ( PyProc (..)
     , pyProc
@@ -87,7 +88,7 @@ mt5CycleTimeoutMicros = 30 * 1000 * 1000  -- 30s
 -- failure throws — a timeout as 'MT5TimeoutException', otherwise the original
 -- 'IOException' — so upstream retry/backoff handles it and the engine moves
 -- on to the next instrument instead of hanging.
-withMT5Lock :: IO a -> IO a
+withMT5Lock :: forall a. IO a -> IO a
 withMT5Lock action = withMVar pyProcLock $ \_ -> do
   firstAttempt <- attempt
   case firstAttempt of
