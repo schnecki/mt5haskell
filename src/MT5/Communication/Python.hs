@@ -8,6 +8,7 @@ module MT5.Communication.Python
     , pythonCode
     , withMT5Lock
     , registerReconnectAction
+    , MT5TimeoutException (..)
     ) where
 
 import           MT5.Embedded.MainPy    (mainPyContent)
@@ -22,7 +23,9 @@ import           EasyLogger
 import           Language.Python.Pickle hiding (unpickle')
 import           System.IO
 
-import           MT5.Communication.PyProc (PyProc (..), pyProc, registerReconnectAction, withMT5Lock)
+import           MT5.Communication.PyProc (MT5TimeoutException (..), PyProc (..),
+                                           pyProc, registerReconnectAction,
+                                           withMT5Lock)
 
 
 -- | Send a command or argument line to the MT5 daemon.
