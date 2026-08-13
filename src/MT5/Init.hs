@@ -45,6 +45,7 @@ import           System.Posix.IO          (OpenFileFlags (..), OpenMode (..),
                                            openFd)
 import           System.Posix.Process     (getProcessID)
 import           System.Process           hiding (env)
+import           System.Timeout           (timeout)
 import           Text.Regex
 
 import           MT5.API
@@ -184,9 +185,19 @@ connectToDaemon :: IO ()
 connectToDaemon = do
     h <- connectSocketHandle
     writeIORef pyProc $ Just $ PyProc h h (hClose h)
-    send "HELLO"
-    void receive
-    registerReconnectAction connectToDaemon
+    -- Bound the HELLO handshake with the same per-cycle deadline used for
+    -- ordinary MT5 exchanges.  This path runs inside 'withMT5Lock' as the
+    -- reconnect action after a stalled cycle: a daemon that accepts the socket
+    -- but never replies would otherwise block 'receive' forever while holding
+    -- 'pyProcLock', re-freezing every subsequent MT5 call across all
+    -- instruments.  On timeout, drop the fresh socket and surface a recoverable
+    -- 'MT5TimeoutException' so upstream retry/backoff proceeds instead of hanging.
+    handshake <- timeout mt5CycleTimeoutMicros (send "HELLO" >> void receive)
+    case handshake of
+        Just _  -> registerReconnectAction connectToDaemon
+        Nothing -> do
+            hClose h `catch` \(_ :: SomeException) -> return ()
+            throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
 
 
 -- =====================================================================
