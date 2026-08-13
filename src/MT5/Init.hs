@@ -144,13 +144,21 @@ startSocketDaemon config mRpycPid = do
     let pythonPath = venvDir config </> "python_server.py"
     writeFile pythonPath (T.unpack (Encoding.decodeLatin1 pythonCode))
     devNull <- openFile "/dev/null" ReadWriteMode
+    -- Capture the daemon's stdout/stderr in a persistent file instead of
+    -- discarding to /dev/null.  The daemon's own structured '_log' output and
+    -- any Python traceback land here, giving the only window into a stalled or
+    -- crashing MT5 transport (the socket itself carries no diagnostics).
+    let logPath = venvDir config </> "python_server.log"
+    logHandle <- openFile logPath AppendMode
+    hSetBuffering logHandle LineBuffering
+    $(logInfo) ("MT5 daemon log: " ++ logPath)
     let rpycArgs = maybe [] (\pid -> [show pid]) mRpycPid
     (_, _, _, pHandle) <-
         createProcess (proc python (pythonPath : rpycArgs))
             { cwd    = Just "."
             , std_in  = UseHandle devNull
-            , std_out = UseHandle devNull
-            , std_err = UseHandle devNull
+            , std_out = UseHandle logHandle
+            , std_err = UseHandle logHandle
             }
     writeIORef mt5DaemonProcess (Just pHandle)
 
