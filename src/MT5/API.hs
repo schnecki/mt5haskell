@@ -75,12 +75,14 @@ import           EasyLogger                  (logDebug, logDebugText, logInfo,
                                               logWarningText)
 import           GHC.Generics                (Generic)
 import           System.IO.Unsafe            (unsafePerformIO)
+import           System.Timeout              (timeout)
 
 
 import           MT5.API.Internal            (sendRequestViaFile)
 import           MT5.Communication.File      (getMT5FilesDirDefault,
                                               resetMT5Files)
 import           MT5.Communication           (receive, send, unpickle', withMT5Lock)
+import           MT5.Communication.PyProc    (mt5CycleTimeoutMicros)
 import           MT5.Communication.Request   (mkAccountInfoRequest,
                                               mkOrderSendRequest,
                                               mkOrdersGetRequest,
@@ -359,11 +361,16 @@ symbolGroupToString grp = case grp of
 -- Corresponds to MetaTrader5.initialize().
 initialize :: IO (Either String ())
 initialize = do
-  send "INITIALIZE"
-  res <- unpickle' "Bool" <$> receive
-  if res
-    then return $ Right ()
-    else Left <$> getError "failed to initialize to account #{}, error code: {}"
+  -- Bound the send/receive so a stalled daemon during startup cannot block
+  -- forever. A bare 'timeout' (not 'withMT5Lock') avoids re-entering the
+  -- reconnect action while the connection is still being established.
+  mRes <- timeout mt5CycleTimeoutMicros $ do
+    send "INITIALIZE"
+    unpickle' "Bool" <$> receive
+  case mRes of
+    Nothing    -> return $ Left "INITIALIZE timed out"
+    Just True  -> return $ Right ()
+    Just False -> Left <$> getError "failed to initialize to account #{}, error code: {}"
 
 -- | Reset the file bridge by writing empty JSON to both request and response files.
 --
@@ -389,13 +396,17 @@ resetFileBridge = do
 loginAccount :: Login           -- ^ Account login credentials (username and password)
              -> IO (Either String ())
 loginAccount Login {..} = do
-  send "LOGIN"
-  send account
-  send password
-  res <- unpickle' "Bool" <$> receive
-  if res
-    then return $ Right ()
-    else Left <$> getError "failed to connect to account #{}, error code: {}"
+  -- Bound the login handshake; a bare 'timeout' avoids reconnect re-entry
+  -- during startup (see 'initialize').
+  mRes <- timeout mt5CycleTimeoutMicros $ do
+    send "LOGIN"
+    send account
+    send password
+    unpickle' "Bool" <$> receive
+  case mRes of
+    Nothing    -> return $ Left "LOGIN timed out"
+    Just True  -> return $ Right ()
+    Just False -> Left <$> getError "failed to connect to account #{}, error code: {}"
 
 
 -- | Retrieve account information for the current session.
@@ -1279,10 +1290,14 @@ convertSymbolInfoResponse resp =
 --
 symbolSelect :: Symbol          -- ^ Symbol name to select (e.g., "EURUSD")
              -> IO Bool
-symbolSelect symbol = do
-  send "SYMBOL_SELECT"
-  send symbol
-  unpickle' "Bool" <$> receive
+symbolSelect symbol = withMT5Lock $ do
+  outcome <- try $ do
+    send "SYMBOL_SELECT"
+    send symbol
+    unpickle' "Bool" <$> receive
+  case outcome of
+    Left (_ :: SomeException) -> return False
+    Right res                 -> return res
 
 -- | Get current price information for a trading symbol
 --
@@ -1310,18 +1325,20 @@ symbolSelect symbol = do
 -- Left "No tick data available for INVALID"
 currentPriceGET :: Symbol      -- ^ Trading symbol for price retrieval
                 -> IO (Either String CurrentPrice)
-currentPriceGET symbol = do
-  -- Follow established command pattern (uppercase commands)
-  send "SYMBOL_INFO_TICK"
-  send symbol
-
-  -- Read the response following the established pattern
-  result <- unpickle' "String" <$> receive
-
-  -- Check if response indicates an error
-  if "error:" `isPrefixOf` result
-    then return $ Left (drop 6 result) -- Remove "error:" prefix
-    else parseCurrentPriceFromFields symbol
+currentPriceGET symbol = withMT5Lock $ do
+  outcome <- try $ do
+    -- Follow established command pattern (uppercase commands)
+    send "SYMBOL_INFO_TICK"
+    send symbol
+    -- Read the response following the established pattern
+    result <- unpickle' "String" <$> receive
+    -- Check if response indicates an error
+    if "error:" `isPrefixOf` result
+      then return $ Left (drop 6 result) -- Remove "error:" prefix
+      else parseCurrentPriceFromFields symbol
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
 
 -- | Parse current price by reading individual fields from Python server
 -- Following the established pattern of reading fields sequentially
@@ -1422,10 +1439,16 @@ orderCheckViaFile mqlReq = do
 
 -- | Check order using Python bridge
 orderCheckViaPython :: MqlTradeRequest -> IO OrderSendResult
-orderCheckViaPython request = do
-  send "ORDER_CHECK"
-  sendMqlTradeRequest request
-  readOrderSendResult
+orderCheckViaPython request = withMT5Lock $ do
+  outcome <- try $ do
+    send "ORDER_CHECK"
+    sendMqlTradeRequest request
+    readOrderSendResult
+  case outcome of
+    Left (e :: SomeException) ->
+      return $ OrderSendResult TRADE_RETCODE_TIMEOUT 0 0 0.0 0.0 0.0 0.0
+                 ("Order check cycle failed: " ++ show e) 0 0
+    Right res -> return res
 
 -- | Send a trade request to the Python server (internal helper).
 --
@@ -1713,10 +1736,16 @@ cancelOrderViaFile orderTicket = do
 
 -- | Cancel pending order via Python bridge (ORDER_CANCEL command).
 cancelOrderViaPython :: Int -> IO OrderSendResult
-cancelOrderViaPython orderTicket = do
-  send "ORDER_CANCEL"
-  send (show orderTicket)
-  readOrderSendResult
+cancelOrderViaPython orderTicket = withMT5Lock $ do
+  outcome <- try $ do
+    send "ORDER_CANCEL"
+    send (show orderTicket)
+    readOrderSendResult
+  case outcome of
+    Left (e :: SomeException) ->
+      return $ OrderSendResult TRADE_RETCODE_ERROR 0 0 (DecimalNumber Nothing 0.0) 0.0 0.0 0.0
+                 ("order_cancel cycle failed for ticket " ++ show orderTicket ++ ": " ++ show e) 0 0
+    Right res -> return res
 
 -- | Cancel all pending orders in the account
 --
@@ -1795,19 +1824,21 @@ getCandleDataRange :: String          -- ^ Trading symbol (e.g., "EURUSD")
                    -> UTCTime         -- ^ Start time (inclusive)
                    -> UTCTime         -- ^ End time (inclusive)
                    -> IO (Either String MT5CandleData)
-getCandleDataRange symbol granularity fromTime toTime = do
-  send "COPY_RATES_RANGE"
-  send symbol
-  send $ show $ toMT5TimeframeInt granularity
-  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
-  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
-
-  -- Read response following established pattern (like currentPriceGET)
-  result <- unpickle' "String" <$> receive
-
-  if "error:" `isPrefixOf` result
-    then return $ Left (drop 6 result)
-    else parseCandleDataFromFields symbol
+getCandleDataRange symbol granularity fromTime toTime = withMT5Lock $ do
+  outcome <- try $ do
+    send "COPY_RATES_RANGE"
+    send symbol
+    send $ show $ toMT5TimeframeInt granularity
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
+    -- Read response following established pattern (like currentPriceGET)
+    result <- unpickle' "String" <$> receive
+    if "error:" `isPrefixOf` result
+      then return $ Left (drop 6 result)
+      else parseCandleDataFromFields symbol
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
 
 -- | Get candlestick data using count from specific time
 --
@@ -1826,18 +1857,20 @@ getCandleDataFrom :: String          -- ^ Trading symbol
                   -> UTCTime         -- ^ Start time
                   -> Int             -- ^ Number of candles to retrieve (max 5000)
                   -> IO (Either String MT5CandleData)
-getCandleDataFrom symbol granularity fromTime count = do
-  send "COPY_RATES_FROM"
-  send symbol
-  send $ show $ toMT5TimeframeInt granularity
-  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
-  send $ show count
-
-  result <- unpickle' "String" <$> receive
-
-  if "error:" `isPrefixOf` result
-    then return $ Left (drop 6 result)
-    else parseCandleDataFromFields symbol
+getCandleDataFrom symbol granularity fromTime count = withMT5Lock $ do
+  outcome <- try $ do
+    send "COPY_RATES_FROM"
+    send symbol
+    send $ show $ toMT5TimeframeInt granularity
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+    send $ show count
+    result <- unpickle' "String" <$> receive
+    if "error:" `isPrefixOf` result
+      then return $ Left (drop 6 result)
+      else parseCandleDataFromFields symbol
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
 
 -- | Get recent candlestick data (most recent count candles)
 --
@@ -1856,18 +1889,20 @@ getCandleDataRecent :: String          -- ^ Trading symbol
                     -> MT5Granularity  -- ^ Timeframe for candles
                     -> Int             -- ^ Number of recent candles (max 5000)
                     -> IO (Either String MT5CandleData)
-getCandleDataRecent symbol granularity count = do
-  send "COPY_RATES_FROM_POS"
-  send symbol
-  send $ show $ toMT5TimeframeInt granularity
-  send "0"  -- start from most recent (position 0)
-  send $ show count
-
-  result <- unpickle' "String" <$> receive
-
-  if "error:" `isPrefixOf` result
-    then return $ Left (drop 6 result)
-    else parseCandleDataFromFields symbol
+getCandleDataRecent symbol granularity count = withMT5Lock $ do
+  outcome <- try $ do
+    send "COPY_RATES_FROM_POS"
+    send symbol
+    send $ show $ toMT5TimeframeInt granularity
+    send "0"  -- start from most recent (position 0)
+    send $ show count
+    result <- unpickle' "String" <$> receive
+    if "error:" `isPrefixOf` result
+      then return $ Left (drop 6 result)
+      else parseCandleDataFromFields symbol
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
 
 -- | Parse candle data by reading individual fields from Python server
 --
@@ -1904,16 +1939,20 @@ copyTicksFrom :: String    -- ^ Symbol (e.g. "US30.pro")
               -> Int       -- ^ Maximum number of ticks to return
               -> Int       -- ^ Tick type flags (see 'MT5.Data.Tick')
               -> IO (Either String [MT5Tick])
-copyTicksFrom symbol fromTime count flags = do
-  send "COPY_TICKS_FROM"
-  send symbol
-  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
-  send $ show count
-  send $ show flags
-  result <- unpickle' "String" <$> receive
-  if "error:" `isPrefixOf` result
-    then return $ Left (drop 6 result)
-    else parseTickDataFromFields
+copyTicksFrom symbol fromTime count flags = withMT5Lock $ do
+  outcome <- try $ do
+    send "COPY_TICKS_FROM"
+    send symbol
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+    send $ show count
+    send $ show flags
+    result <- unpickle' "String" <$> receive
+    if "error:" `isPrefixOf` result
+      then return $ Left (drop 6 result)
+      else parseTickDataFromFields
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
 
 -- | Retrieve all ticks within a UTC time range.
 --
@@ -1923,16 +1962,20 @@ copyTicksRange :: String    -- ^ Symbol
                -> UTCTime   -- ^ Range end (inclusive)
                -> Int       -- ^ Tick type flags (see 'MT5.Data.Tick')
                -> IO (Either String [MT5Tick])
-copyTicksRange symbol fromTime toTime flags = do
-  send "COPY_TICKS_RANGE"
-  send symbol
-  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
-  send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
-  send $ show flags
-  result <- unpickle' "String" <$> receive
-  if "error:" `isPrefixOf` result
-    then return $ Left (drop 6 result)
-    else parseTickDataFromFields
+copyTicksRange symbol fromTime toTime flags = withMT5Lock $ do
+  outcome <- try $ do
+    send "COPY_TICKS_RANGE"
+    send symbol
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
+    send $ show flags
+    result <- unpickle' "String" <$> receive
+    if "error:" `isPrefixOf` result
+      then return $ Left (drop 6 result)
+      else parseTickDataFromFields
+  case outcome of
+    Left (e :: SomeException) -> return $ Left (show e)
+    Right res                 -> return res
 
 parseTickDataFromFields :: IO (Either String [MT5Tick])
 parseTickDataFromFields = do
