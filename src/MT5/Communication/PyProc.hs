@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module MT5.Communication.PyProc
     ( PyProc (..)
@@ -9,15 +10,23 @@ module MT5.Communication.PyProc
     , mt5CycleTimeoutMicros
     ) where
 
-import           Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import           Control.Exception       (Exception, IOException, catch,
-                                          throwIO)
+import           Control.Concurrent         (threadDelay)
+import           Control.Concurrent.MVar    (MVar, modifyMVar, newMVar,
+                                             withMVar)
+import           Control.Exception          (Exception, IOException, catch,
+                                             finally, throwIO, try)
 import           Data.IORef
-import           GHC.Clock               (getMonotonicTimeNSec)
+import           GHC.Clock                  (getMonotonicTimeNSec)
 import           System.IO
-import           System.IO.Error         (isEOFError, isResourceVanishedError)
-import           System.IO.Unsafe        (unsafePerformIO)
-import           System.Timeout          (timeout)
+import           System.IO.Error            (isEOFError,
+                                             isResourceVanishedError)
+import           System.IO.Unsafe           (unsafePerformIO)
+import           System.Posix.IO            (handleToFd)
+import           System.Posix.IO.ByteString (LockRequest (..), setLock)
+import           System.Posix.Types         (Fd, FileOffset)
+import           System.Timeout             (timeout)
+
+import           MT5.Communication.Socket   (socketPath)
 
 
 -- | Connection to the MT5 daemon (socket-based).
@@ -88,8 +97,77 @@ mt5CycleTimeoutMicros = 30 * 1000 * 1000  -- 30s
 -- failure throws — a timeout as 'MT5TimeoutException', otherwise the original
 -- 'IOException' — so upstream retry/backoff handles it and the engine moves
 -- on to the next instrument instead of hanging.
+-- | Filesystem path of the advisory lock guarding daemon access across
+-- separate OS processes.  Keyed on the shared daemon socket so every process
+-- talking to the same MT5 terminal contends on the same lock.
+crossProcLockPath :: FilePath
+crossProcLockPath = socketPath ++ ".lock"
+
+-- | Persistent file descriptor holding the cross-process advisory lock.
+--
+-- 'Nothing' until first use; a 'Just' that stays 'Nothing' after a failed
+-- open means the lock is disabled (degrade to intra-process 'pyProcLock'
+-- only) rather than crashing a process that cannot create the lock file.
+mt5CrossProcFd :: MVar (Maybe Fd)
+mt5CrossProcFd = unsafePerformIO $ newMVar Nothing
+{-# NOINLINE mt5CrossProcFd #-}
+
+-- | Whole-file POSIX record lock descriptor: (request, whence, start, len=0).
+crossProcRegion :: LockRequest -> (LockRequest, SeekMode, FileOffset, FileOffset)
+crossProcRegion req = (req, AbsoluteSeek, 0, 0)
+
+-- | Lazily open (once) the descriptor backing 'crossProcLockPath'.
+--
+-- A failure to open disables cross-process locking for this process instead
+-- of propagating: intra-process serialisation via 'pyProcLock' still holds.
+getCrossProcFd :: IO (Maybe Fd)
+getCrossProcFd = modifyMVar mt5CrossProcFd $ \case
+  Just fd -> return (Just fd, Just fd)
+  Nothing -> do
+    r <- try (openFile crossProcLockPath ReadWriteMode >>= handleToFd)
+    case r of
+      Right fd               -> return (Just fd, Just fd)
+      Left (_ :: IOException) -> return (Nothing, Nothing)
+
+-- | Serialise the enclosed cycle across processes sharing the MT5 daemon.
+--
+-- Uses a non-blocking @F_SETLK@ ('setLock') polled with a delay so a wedged
+-- peer cannot hang an uninterruptible @safe@ FFI call under 'timeout'.  If the
+-- lock cannot be acquired within 'mt5CycleTimeoutMicros' the cycle fails as a
+-- 'MT5TimeoutException', matching the daemon-timeout path so upstream
+-- retry/backoff handles it.  When the lock file is unavailable the action runs
+-- unguarded (intra-process 'pyProcLock' still applies).
+withCrossProcLock :: forall a. IO a -> IO a
+withCrossProcLock act = getCrossProcFd >>= \case
+  Nothing -> act
+  Just fd -> do
+    acquired <- pollAcquire fd 0
+    if acquired
+      then act `finally` releaseQuietly fd
+      else throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
+  where
+    stepMicros :: Int
+    stepMicros = 50 * 1000  -- 50ms poll interval
+
+    -- Non-blocking acquire loop bounded by the per-cycle deadline.
+    pollAcquire :: Fd -> Int -> IO Bool
+    pollAcquire fd waited
+      | waited >= mt5CycleTimeoutMicros = return False
+      | otherwise = do
+          got <- (setLock fd (crossProcRegion WriteLock) >> return True)
+                   `catch` \(_ :: IOException) -> return False
+          if got
+            then return True
+            else threadDelay stepMicros >> pollAcquire fd (waited + stepMicros)
+
+    -- Release; a failed unlock must never mask the cycle result.
+    releaseQuietly :: Fd -> IO ()
+    releaseQuietly fd =
+      setLock fd (crossProcRegion Unlock)
+        `catch` \(_ :: IOException) -> return ()
+
 withMT5Lock :: forall a. IO a -> IO a
-withMT5Lock action = withMVar pyProcLock $ \_ -> do
+withMT5Lock action = withMVar pyProcLock $ \_ -> withCrossProcLock $ do
   firstAttempt <- attempt
   case firstAttempt of
     Right a -> return a
