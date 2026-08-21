@@ -149,10 +149,19 @@ withCrossProcLock act = getCrossProcFd >>= \case
     stepMicros :: Int
     stepMicros = 50 * 1000  -- 50ms poll interval
 
-    -- Non-blocking acquire loop bounded by the per-cycle deadline.
+    -- Waiting for a peer process to release the lock is legitimate contention,
+    -- not a daemon stall, so it gets its own generous budget rather than the
+    -- per-cycle daemon deadline. A crashed holder auto-releases the fcntl lock
+    -- on process exit, and a live-but-wedged holder is itself bounded by its
+    -- own 'mt5CycleTimeoutMicros', so this budget is only ever approached under
+    -- pathological contention.
+    acquireBudgetMicros :: Int
+    acquireBudgetMicros = 60 * 1000 * 1000  -- 1 min
+
+    -- Non-blocking acquire loop bounded by the contention budget.
     pollAcquire :: Fd -> Int -> IO Bool
     pollAcquire fd waited
-      | waited >= mt5CycleTimeoutMicros = return False
+      | waited >= acquireBudgetMicros = return False
       | otherwise = do
           got <- (setLock fd (crossProcRegion WriteLock) >> return True)
                    `catch` \(_ :: IOException) -> return False
