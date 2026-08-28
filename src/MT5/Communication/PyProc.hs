@@ -22,7 +22,8 @@ import           System.IO.Error            (isEOFError,
                                              isResourceVanishedError)
 import           System.IO.Unsafe           (unsafePerformIO)
 import           System.Posix.IO            (handleToFd)
-import           System.Posix.IO.ByteString (LockRequest (..), setLock)
+import           System.Posix.IO.ByteString (LockRequest (..), setLock,
+                                             waitToSetLock)
 import           System.Posix.Types         (Fd, FileOffset)
 import           System.Timeout             (timeout)
 
@@ -112,9 +113,26 @@ mt5CrossProcFd :: MVar (Maybe Fd)
 mt5CrossProcFd = unsafePerformIO $ newMVar Nothing
 {-# NOINLINE mt5CrossProcFd #-}
 
--- | Whole-file POSIX record lock descriptor: (request, whence, start, len=0).
-crossProcRegion :: LockRequest -> (LockRequest, SeekMode, FileOffset, FileOffset)
-crossProcRegion req = (req, AbsoluteSeek, 0, 0)
+-- | POSIX record lock on the /work/ byte (offset 0, length 1).
+--
+-- This is the real serialising lock: held for an entire request/response
+-- cycle.  Acquired by non-blocking polling ('setLock'/@F_SETLK@) so the wait is
+-- interruptible by 'timeout' — a wedged daemon holding it must not pin an
+-- uninterruptible @safe@ FFI call.
+workRegion :: LockRequest -> (LockRequest, SeekMode, FileOffset, FileOffset)
+workRegion req = (req, AbsoluteSeek, 0, 1)
+
+-- | POSIX record lock on the /turnstile/ byte (offset 1, length 1).
+--
+-- A fairness gate, disjoint from 'workRegion'.  Acquired by a /blocking/
+-- 'waitToSetLock' (@F_SETLKW@) so the kernel queues contending processes in
+-- arrival order, then released the instant the work lock is held.  A process
+-- that has just released the work lock and loops back must re-enter at the tail
+-- of this queue, so a hot request loop (e.g. a historical backfill) can no
+-- longer re-grab the work lock ahead of a process already waiting — which is
+-- what let a data download starve the live trader off the shared daemon.
+turnstileRegion :: LockRequest -> (LockRequest, SeekMode, FileOffset, FileOffset)
+turnstileRegion req = (req, AbsoluteSeek, 1, 1)
 
 -- | Lazily open (once) the descriptor backing 'crossProcLockPath'.
 --
@@ -129,11 +147,20 @@ getCrossProcFd = modifyMVar mt5CrossProcFd $ \case
       Right fd               -> return (Just fd, Just fd)
       Left (_ :: IOException) -> return (Nothing, Nothing)
 
--- | Serialise the enclosed cycle across processes sharing the MT5 daemon.
+-- | Serialise the enclosed cycle across processes sharing the MT5 daemon,
+-- fairly.
 --
--- Uses a non-blocking @F_SETLK@ ('setLock') polled with a delay so a wedged
--- peer cannot hang an uninterruptible @safe@ FFI call under 'timeout'.  If the
--- lock cannot be acquired within 'mt5CycleTimeoutMicros' the cycle fails as a
+-- A two-lock turnstile mutex.  A process first blocks on the 'turnstileRegion'
+-- (@F_SETLKW@, kernel-queued in arrival order), then polls the 'workRegion'
+-- (@F_SETLK@, interruptible), then releases the turnstile as soon as the work
+-- lock is held.  Because a process that has just released the work lock must
+-- re-join the tail of the turnstile queue, a tight request loop can no longer
+-- re-acquire ahead of an already-waiting peer: this is what stops a historical
+-- data backfill from starving the live trader off the shared daemon.
+--
+-- The work lock is polled (not blocking) so a wedged daemon holding it cannot
+-- pin an uninterruptible @safe@ FFI call under 'timeout'; if it cannot be
+-- acquired within 'acquireBudgetMicros' the cycle fails as an
 -- 'MT5TimeoutException', matching the daemon-timeout path so upstream
 -- retry/backoff handles it.  When the lock file is unavailable the action runs
 -- unguarded (intra-process 'pyProcLock' still applies).
@@ -141,9 +168,14 @@ withCrossProcLock :: forall a. IO a -> IO a
 withCrossProcLock act = getCrossProcFd >>= \case
   Nothing -> act
   Just fd -> do
-    acquired <- pollAcquire fd 0
+    -- Block in the fair turnstile queue, then take the work lock; release the
+    -- turnstile the moment work is held (or acquisition fails), so waiters are
+    -- served strictly in arrival order.
+    acquired <-
+      (waitToSetLock fd (turnstileRegion WriteLock) `catch` \(_ :: IOException) -> return ())
+        >> pollAcquire fd 0 `finally` releaseTurnstile fd
     if acquired
-      then act `finally` releaseQuietly fd
+      then act `finally` releaseWork fd
       else throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
   where
     stepMicros :: Int
@@ -158,21 +190,28 @@ withCrossProcLock act = getCrossProcFd >>= \case
     acquireBudgetMicros :: Int
     acquireBudgetMicros = 60 * 1000 * 1000  -- 1 min
 
-    -- Non-blocking acquire loop bounded by the contention budget.
+    -- Non-blocking acquire loop for the work lock, bounded by the contention
+    -- budget.  Runs while the turnstile is held, so at most the single prior
+    -- work holder is contended against.
     pollAcquire :: Fd -> Int -> IO Bool
     pollAcquire fd waited
       | waited >= acquireBudgetMicros = return False
       | otherwise = do
-          got <- (setLock fd (crossProcRegion WriteLock) >> return True)
+          got <- (setLock fd (workRegion WriteLock) >> return True)
                    `catch` \(_ :: IOException) -> return False
           if got
             then return True
             else threadDelay stepMicros >> pollAcquire fd (waited + stepMicros)
 
-    -- Release; a failed unlock must never mask the cycle result.
-    releaseQuietly :: Fd -> IO ()
-    releaseQuietly fd =
-      setLock fd (crossProcRegion Unlock)
+    -- Release helpers; a failed unlock must never mask the cycle result.
+    releaseWork :: Fd -> IO ()
+    releaseWork fd =
+      setLock fd (workRegion Unlock)
+        `catch` \(_ :: IOException) -> return ()
+
+    releaseTurnstile :: Fd -> IO ()
+    releaseTurnstile fd =
+      setLock fd (turnstileRegion Unlock)
         `catch` \(_ :: IOException) -> return ()
 
 withMT5Lock :: forall a. IO a -> IO a
