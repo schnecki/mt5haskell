@@ -16,11 +16,14 @@ import           Control.Concurrent.MVar    (MVar, modifyMVar, newMVar,
 import           Control.Exception          (Exception, IOException, catch,
                                              finally, throwIO, try)
 import           Data.IORef
+import           Data.Maybe                 (fromMaybe)
 import           GHC.Clock                  (getMonotonicTimeNSec)
+import           System.Environment         (lookupEnv)
 import           System.IO
 import           System.IO.Error            (isEOFError,
                                              isResourceVanishedError)
 import           System.IO.Unsafe           (unsafePerformIO)
+import           Text.Read                  (readMaybe)
 import           System.Posix.IO            (handleToFd)
 import           System.Posix.IO.ByteString (LockRequest (..), setLock,
                                              waitToSetLock)
@@ -87,8 +90,24 @@ instance Exception MT5TimeoutException
 -- the socket blocks that read forever, never releases the lock, and wedges
 -- every subsequent MT5 call across all instruments.  Bounding the cycle turns
 -- a permanent freeze into a recoverable, retryable error.
+--
+-- Overridable per process via the @MT5_CYCLE_TIMEOUT_MICROS@ environment
+-- variable (integer microseconds).  A bulk data-collection process shares the
+-- daemon with a latency-sensitive live trader: because a stalled request holds
+-- the cross-process work lock for its whole deadline, the collector sets a much
+-- shorter budget so a hanging historical fetch releases the shared daemon
+-- quickly instead of blocking the live trader for the full default window.  An
+-- invalid or absent value falls back to the 30s default.
 mt5CycleTimeoutMicros :: Int
-mt5CycleTimeoutMicros = 30 * 1000 * 1000  -- 30s
+mt5CycleTimeoutMicros = unsafePerformIO $ do
+  mEnv <- lookupEnv "MT5_CYCLE_TIMEOUT_MICROS"
+  return $ fromMaybe defaultMicros (mEnv >>= readMaybe >>= clampPositive)
+  where
+    defaultMicros = 30 * 1000 * 1000  -- 30s
+    clampPositive n
+      | n > 0     = Just n
+      | otherwise = Nothing
+{-# NOINLINE mt5CycleTimeoutMicros #-}
 
 -- | Run an IO action as an atomic MT5 request/response cycle.
 --
