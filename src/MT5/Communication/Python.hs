@@ -22,18 +22,31 @@ import           Data.Word
 import           EasyLogger
 import           Language.Python.Pickle hiding (unpickle')
 import           System.IO
+import           System.IO.Error        (mkIOError, resourceVanishedErrorType)
 
 import           MT5.Communication.PyProc (MT5TimeoutException (..), PyProc (..),
                                            pyProc, registerReconnectAction,
                                            withMT5Lock)
 
 
+-- | Signal that no daemon connection is currently established.
+--
+-- Thrown when 'pyProc' is 'Nothing' — e.g. after a reconnect handshake timed
+-- out and dropped the dead connection.  A @ResourceVanished@ 'IOError' (not a
+-- bare 'error') so 'withMT5Lock' classifies it as recoverable and runs the
+-- reconnect action, which re-establishes 'pyProc'; a raw 'error' would escape
+-- that path and loop "MT5 not started" until the watchdog restarts the process.
+notStartedError :: IO a
+notStartedError =
+  ioError $ mkIOError resourceVanishedErrorType
+    "MT5 daemon connection not established (reconnect required)" Nothing Nothing
+
 -- | Send a command or argument line to the MT5 daemon.
 send :: String -> IO ()
 send cmd = do
     mPyProc <- readIORef pyProc
     case mPyProc of
-        Nothing -> error "MT5 not started. Call startMT5 first."
+        Nothing -> notStartedError
         Just pp -> do
             $(logPrintDebug) $ "Sending: " ++ cmd
             hPutStrLn (pyOut pp) cmd
@@ -44,7 +57,7 @@ receive :: IO B.ByteString
 receive = do
     mPyProc <- readIORef pyProc
     case mPyProc of
-        Nothing -> error "MT5 not started. Call startMT5 first."
+        Nothing -> notStartedError
         Just pp -> readNextObject (pyIn pp)
   where
     readNextObject :: Handle -> IO B.ByteString
