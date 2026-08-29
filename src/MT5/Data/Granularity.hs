@@ -8,6 +8,7 @@
 module MT5.Data.Granularity
     ( MT5Granularity(..)
     , toMT5TimeframeInt
+    , granularitySeconds
     -- , fromCandlestickGranularity  -- COMMENTED OUT - external library function
     ) where
 
@@ -61,6 +62,38 @@ toMT5TimeframeInt granularity = case granularity of
   D1  -> 16408  -- TIMEFRAME_D1
   W1  -> 32769  -- TIMEFRAME_W1
   MN1 -> 49153  -- TIMEFRAME_MN1
+
+-- | Nominal duration of one bar of the given timeframe, in seconds.
+--
+-- Used to bound a time-range candle request to a fixed maximum bar count by
+-- splitting @[from,to]@ into sub-ranges: each sub-range spans at most
+-- @maxBars * granularitySeconds@ seconds, keeping every underlying MT5 call
+-- (and thus every daemon-lock hold) short and preemptible.  Weekly and monthly
+-- bars use calendar approximations (7 and 30 days); exactness is irrelevant
+-- since the value only sizes chunk boundaries, never candle timestamps.
+granularitySeconds :: MT5Granularity -> Int
+granularitySeconds granularity = case granularity of
+  M1  -> 60
+  M2  -> 120
+  M3  -> 180
+  M4  -> 240
+  M5  -> 300
+  M6  -> 360
+  M10 -> 600
+  M12 -> 720
+  M15 -> 900
+  M20 -> 1200
+  M30 -> 1800
+  H1  -> 3600
+  H2  -> 7200
+  H3  -> 10800
+  H4  -> 14400
+  H6  -> 21600
+  H8  -> 28800
+  H12 -> 43200
+  D1  -> 86400
+  W1  -> 604800
+  MN1 -> 2592000
 
 {- COMMENTED OUT - To be implemented in other library that knows about CandlestickGranularity
 -- | Convert from generic CandlestickGranularity to MT5Granularity

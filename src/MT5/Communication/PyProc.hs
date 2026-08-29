@@ -8,6 +8,8 @@ module MT5.Communication.PyProc
     , registerReconnectAction
     , MT5TimeoutException (..)
     , mt5CycleTimeoutMicros
+    , MT5Priority (..)
+    , setMT5Priority
     ) where
 
 import           Control.Concurrent         (threadDelay)
@@ -15,8 +17,9 @@ import           Control.Concurrent.MVar    (MVar, modifyMVar, newMVar,
                                              withMVar)
 import           Control.Exception          (Exception, IOException, catch,
                                              finally, throwIO, try)
+import           Data.Char                  (toLower)
 import           Data.IORef
-import           Data.Maybe                 (fromMaybe)
+import           Data.Maybe                 (fromMaybe, isJust)
 import           GHC.Clock                  (getMonotonicTimeNSec)
 import           System.Environment         (lookupEnv)
 import           System.IO
@@ -26,7 +29,7 @@ import           System.IO.Error            (isEOFError,
 import           System.IO.Unsafe           (unsafePerformIO)
 import           Text.Read                  (readMaybe)
 import           System.Posix.IO            (handleToFd)
-import           System.Posix.IO.ByteString (LockRequest (..), setLock,
+import           System.Posix.IO.ByteString (LockRequest (..), getLock, setLock,
                                              waitToSetLock)
 import           System.Posix.Types         (Fd, FileOffset)
 import           System.Timeout             (timeout)
@@ -154,6 +157,56 @@ workRegion req = (req, AbsoluteSeek, 0, 1)
 turnstileRegion :: LockRequest -> (LockRequest, SeekMode, FileOffset, FileOffset)
 turnstileRegion req = (req, AbsoluteSeek, 1, 1)
 
+-- | POSIX record lock on the /high-priority intent/ byte (offset 2, length 1).
+--
+-- A high-priority process (the live trader) takes a WriteLock here for the
+-- whole of its acquire-and-run cycle, disjoint from 'workRegion' and
+-- 'turnstileRegion'.  A low-priority process (a bulk data collector) probes it
+-- with a non-blocking 'getLock' before contending for work and yields while it
+-- is held, so the latency-sensitive live trader is never queued behind bulk
+-- requests on the shared daemon.
+hpIntentRegion :: LockRequest -> (LockRequest, SeekMode, FileOffset, FileOffset)
+hpIntentRegion req = (req, AbsoluteSeek, 2, 1)
+
+-- | Priority with which a process contends for the shared MT5 daemon.
+--
+-- 'High' is the latency-sensitive live trader; 'Low' is bulk work (e.g. a
+-- historical data collector) that must yield the daemon to live trading.
+data MT5Priority = High | Low
+  deriving (Eq, Show)
+
+-- | Current process priority for daemon acquisition.
+--
+-- Defaults to 'Low' so a plain invocation never starves a concurrent live
+-- trader; the launcher may override the default via the @MT5_PRIORITY=high@
+-- environment variable, and in-process code sets it explicitly with
+-- 'setMT5Priority'.  Read at each 'withCrossProcLock' call, so a change takes
+-- effect immediately with no first-force ordering trap.
+mt5PriorityRef :: IORef MT5Priority
+mt5PriorityRef = unsafePerformIO $ do
+  mEnv <- lookupEnv "MT5_PRIORITY"
+  newIORef $ case fmap (map toLower) mEnv of
+    Just "high" -> High
+    _           -> Low
+{-# NOINLINE mt5PriorityRef #-}
+
+-- | Set this process's daemon-acquisition priority.
+--
+-- Call once at startup: the live trader sets 'High'; bulk collectors leave the
+-- 'Low' default.  Explicit and type-safe — no environment roundtrip.
+setMT5Priority :: MT5Priority -> IO ()
+setMT5Priority = writeIORef mt5PriorityRef
+
+-- | Starvation guard: the maximum time a low-priority cycle yields to a
+-- high-priority intent before forcing one request through regardless.
+--
+-- Bulk work must make progress even while the live trader is active; because
+-- each low-priority request is itself bounded small (the caller chunks large
+-- range fetches), letting one through after this budget costs the live trader
+-- at most a single short chunk of added wait.
+lpYieldBudgetMicros :: Int
+lpYieldBudgetMicros = 5 * 1000 * 1000  -- 5s
+
 -- | Lazily open (once) the descriptor backing 'crossProcLockPath'.
 --
 -- A failure to open disables cross-process locking for this process instead
@@ -188,16 +241,65 @@ withCrossProcLock :: forall a. IO a -> IO a
 withCrossProcLock act = getCrossProcFd >>= \case
   Nothing -> act
   Just fd -> do
-    -- Block in the fair turnstile queue, then take the work lock; release the
-    -- turnstile the moment work is held (or acquisition fails), so waiters are
-    -- served strictly in arrival order.
-    acquired <-
-      (waitToSetLock fd (turnstileRegion WriteLock) `catch` \(_ :: IOException) -> return ())
-        >> pollAcquire fd 0 `finally` releaseTurnstile fd
-    if acquired
-      then act `finally` releaseWork fd
-      else throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
+    prio <- readIORef mt5PriorityRef
+    case prio of
+      High -> acquireHigh fd
+      Low  -> acquireLow fd
   where
+    -- High-priority (live) lane: announce intent so low-priority peers yield,
+    -- then take the work lock directly (skipping the turnstile — a live request
+    -- jumps ahead of queued bulk work).  Intent is held for the whole cycle and
+    -- released together with the work lock.
+    acquireHigh :: Fd -> IO a
+    acquireHigh fd = do
+      _ <- (setLock fd (hpIntentRegion WriteLock) >> return ())
+             `catch` \(_ :: IOException) -> return ()
+      acquired <- pollAcquire fd 0
+      if acquired
+        then act `finally` (releaseWork fd >> releaseHpIntent fd)
+        else releaseHpIntent fd >> throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
+
+    -- Low-priority (bulk) lane: first yield while a high-priority intent is
+    -- pending (bounded by the starvation budget), then take the fair turnstile
+    -- and work lock as before.
+    acquireLow :: Fd -> IO a
+    acquireLow fd = do
+      yieldToHighPrio fd 0
+      -- Block in the fair turnstile queue, then take the work lock; release the
+      -- turnstile the moment work is held (or acquisition fails), so waiters are
+      -- served strictly in arrival order.
+      acquired <-
+        (waitToSetLock fd (turnstileRegion WriteLock) `catch` \(_ :: IOException) -> return ())
+          >> pollAcquire fd 0 `finally` releaseTurnstile fd
+      if acquired
+        then act `finally` releaseWork fd
+        else throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
+
+    -- Poll the high-priority intent byte; block the low-priority cycle while a
+    -- live process holds it, up to 'lpYieldBudgetMicros' so bulk work cannot be
+    -- starved indefinitely.
+    yieldToHighPrio :: Fd -> Int -> IO ()
+    yieldToHighPrio fd waited
+      | waited >= lpYieldBudgetMicros = return ()
+      | otherwise = do
+          pending <- highPrioPending fd
+          if pending
+            then threadDelay stepMicros >> yieldToHighPrio fd (waited + stepMicros)
+            else return ()
+
+    -- Non-blocking probe: is a conflicting (write) high-priority intent lock
+    -- held by another process?  A read-lock request conflicts only with a held
+    -- write lock, so a 'Just' means a live process has announced intent.
+    highPrioPending :: Fd -> IO Bool
+    highPrioPending fd =
+      (isJust <$> getLock fd (hpIntentRegion ReadLock))
+        `catch` \(_ :: IOException) -> return False
+
+    releaseHpIntent :: Fd -> IO ()
+    releaseHpIntent fd =
+      setLock fd (hpIntentRegion Unlock)
+        `catch` \(_ :: IOException) -> return ()
+
     stepMicros :: Int
     stepMicros = 50 * 1000  -- 50ms poll interval
 

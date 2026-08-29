@@ -12,6 +12,9 @@ module MT5.API
     initialize
   , loginAccount
   , resetFileBridge
+    -- * Daemon Priority
+  , MT5Priority (..)
+  , setMT5Priority
     -- * Account Information
   , accountInfo
     -- * Position Management
@@ -68,7 +71,8 @@ import           Data.List                   (filter, find, isPrefixOf)
 import           Data.Maybe                  (fromMaybe)
 import           Data.Text                   (Text)
 import qualified Data.Text                   as T
-import           Data.Time                   (UTCTime, getCurrentTime)
+import           Data.Time                   (NominalDiffTime, UTCTime,
+                                              addUTCTime, getCurrentTime)
 import           Data.Time.Format            (defaultTimeLocale, formatTime)
 import           EasyLogger                  (logDebug, logDebugText, logInfo,
                                               logInfoText, logWarning,
@@ -82,7 +86,9 @@ import           MT5.API.Internal            (sendRequestViaFile)
 import           MT5.Communication.File      (getMT5FilesDirDefault,
                                               resetMT5Files)
 import           MT5.Communication           (receive, send, unpickle', withMT5Lock)
-import           MT5.Communication.PyProc    (mt5CycleTimeoutMicros)
+import           MT5.Communication.PyProc    (MT5Priority (..),
+                                              mt5CycleTimeoutMicros,
+                                              setMT5Priority)
 import           MT5.Communication.Request   (mkAccountInfoRequest,
                                               mkOrderSendRequest,
                                               mkOrdersGetRequest,
@@ -121,11 +127,13 @@ import           MT5.Data.AccountInfo        (AccountMarginMode (..),
                                               AccountStopoutMode (..),
                                               AccountTradeMode (..))
 import           MT5.Data.Candle             (MT5Candle (MT5Candle),
-                                              MT5CandleData (MT5CandleData))
+                                              MT5CandleData (MT5CandleData),
+                                              mt5CandleTime, mt5Candles)
 import           MT5.Data.Tick               (MT5Tick (..))
 import           MT5.Data.DecimalNumber      (DecimalNumber (..),
                                               mkDecimalNumberFromDouble)
-import           MT5.Data.Granularity        (MT5Granularity, toMT5TimeframeInt)
+import           MT5.Data.Granularity        (MT5Granularity, granularitySeconds,
+                                              toMT5TimeframeInt)
 import           MT5.Data.OrderSendResult    (TradeRetcode (..), toTradeRetcode)
 import           MT5.Data.OrderState         (OrderState (..))
 import           MT5.Data.OrderType          (OrderType (..))
@@ -1819,12 +1827,66 @@ cancelTradeOrderViaFile order = do
 --
 -- >>> getCandleDataRange "INVALID" M5 from to
 -- Left "No rate data available for INVALID, MT5 error: ..."
+-- | Maximum number of bars fetched by a single underlying COPY_RATES_RANGE
+-- call.  A large cold range (e.g. a multi-week historical backfill) fetched in
+-- one call holds the daemon lock for its entire, possibly multi-minute,
+-- duration — long enough to blow a live trader's per-cycle budget while the
+-- process shares the daemon.  'getCandleDataRange' splits any wider request
+-- into sub-ranges of at most this many bars, each its own bounded
+-- 'withMT5Lock' cycle, so every lock hold stays short and a higher-priority
+-- caller can preempt at the boundary between chunks.
+maxBarsPerRangeCall :: Int
+maxBarsPerRangeCall = 500
+
 getCandleDataRange :: String          -- ^ Trading symbol (e.g., "EURUSD")
                    -> MT5Granularity  -- ^ Timeframe for candles
                    -> UTCTime         -- ^ Start time (inclusive)
                    -> UTCTime         -- ^ End time (inclusive)
                    -> IO (Either String MT5CandleData)
-getCandleDataRange symbol granularity fromTime toTime = withMT5Lock $ do
+getCandleDataRange symbol granularity fromTime toTime
+  | fromTime >= toTime = fetchRangeChunk symbol granularity fromTime toTime
+  | otherwise          = go fromTime []
+  where
+    -- Duration one sub-range spans: at most 'maxBarsPerRangeCall' bars wide.
+    chunkSpan :: NominalDiffTime
+    chunkSpan = fromIntegral (maxBarsPerRangeCall * granularitySeconds granularity)
+
+    -- One bar's worth of time; advances the cursor past a chunk's inclusive end
+    -- so the next sub-range does not re-request the boundary bar.
+    barStep :: NominalDiffTime
+    barStep = fromIntegral (granularitySeconds granularity)
+
+    -- Accumulate sub-range results (newest chunk first) until the far end is
+    -- reached, then merge chronologically and drop any boundary duplicates.
+    go :: UTCTime -> [[MT5Candle]] -> IO (Either String MT5CandleData)
+    go cursor acc = do
+      let chunkEnd = min toTime (addUTCTime chunkSpan cursor)
+      res <- fetchRangeChunk symbol granularity cursor chunkEnd
+      case res of
+        Left err -> return (Left err)
+        Right cd
+          | chunkEnd >= toTime ->
+              return $ Right $ MT5CandleData (mergeChunks (mt5Candles cd : acc)) symbol
+          | otherwise ->
+              go (addUTCTime barStep chunkEnd) (mt5Candles cd : acc)
+
+    -- Chunks were pushed newest-first; reverse to chronological order, then
+    -- drop candles sharing a timestamp with their predecessor (defensive
+    -- against any inclusive-boundary overlap).
+    mergeChunks :: [[MT5Candle]] -> [MT5Candle]
+    mergeChunks = dedupAdjacent . concat . reverse
+
+    dedupAdjacent :: [MT5Candle] -> [MT5Candle]
+    dedupAdjacent (a : b : rest)
+      | mt5CandleTime a == mt5CandleTime b = dedupAdjacent (a : rest)
+      | otherwise                         = a : dedupAdjacent (b : rest)
+    dedupAdjacent xs = xs
+
+-- | Fetch a single COPY_RATES_RANGE window under one bounded 'withMT5Lock'
+-- cycle.  The lock-hold duration of this call is bounded by 'maxBarsPerRangeCall'
+-- via its sole caller 'getCandleDataRange'.
+fetchRangeChunk :: String -> MT5Granularity -> UTCTime -> UTCTime -> IO (Either String MT5CandleData)
+fetchRangeChunk symbol granularity fromTime toTime = withMT5Lock $ do
   outcome <- try $ do
     send "COPY_RATES_RANGE"
     send symbol
