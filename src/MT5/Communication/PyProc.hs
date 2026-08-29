@@ -21,6 +21,7 @@ import           GHC.Clock                  (getMonotonicTimeNSec)
 import           System.Environment         (lookupEnv)
 import           System.IO
 import           System.IO.Error            (isEOFError,
+                                             isIllegalOperation,
                                              isResourceVanishedError)
 import           System.IO.Unsafe           (unsafePerformIO)
 import           Text.Read                  (readMaybe)
@@ -250,7 +251,12 @@ withMT5Lock action = withMVar pyProcLock $ \_ -> withCrossProcLock $ do
     -- exceeded, or a vanished/EOF socket); anything else is rethrown.
     attempt :: IO (Either () a)
     attempt = timedRun `catch` \e ->
-      if isResourceVanishedError e || isEOFError (e :: IOException)
+      -- A closed socket handle surfaces as 'IllegalOperation' ("handle is
+      -- closed"), not resource-vanished/EOF.  It is equally recoverable: the
+      -- reconnect action reopens the daemon socket.  Without classifying it
+      -- here the cycle rethrows, upstream retries the *same* dead handle, and
+      -- the process loops until the watchdog kills it.
+      if isResourceVanishedError e || isEOFError e || isIllegalOperation (e :: IOException)
         then return (Left ())
         else throwIO e
 

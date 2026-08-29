@@ -205,6 +205,11 @@ connectToDaemon = do
         Just _  -> registerReconnectAction connectToDaemon
         Nothing -> do
             hClose h `catch` \(_ :: SomeException) -> return ()
+            -- Drop the dead handle from 'pyProc'; leaving it set would let the
+            -- next 'send' write to a closed handle ("hPutStr: illegal operation
+            -- (handle is closed)"), an error class that never triggers a
+            -- reconnect and so loops forever until the watchdog kills the process.
+            writeIORef pyProc Nothing
             throwIO (MT5TimeoutException mt5CycleTimeoutMicros)
 
 
