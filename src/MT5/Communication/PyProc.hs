@@ -200,12 +200,18 @@ setMT5Priority = writeIORef mt5PriorityRef
 -- | Starvation guard: the maximum time a low-priority cycle yields to a
 -- high-priority intent before forcing one request through regardless.
 --
--- Bulk work must make progress even while the live trader is active; because
--- each low-priority request is itself bounded small (the caller chunks large
--- range fetches), letting one through after this budget costs the live trader
--- at most a single short chunk of added wait.
+-- This is a progress /floor/, not a fairness knob: while a high-priority
+-- process is actively contending (e.g. a live trader's multi-minute boot
+-- catch-up issuing back-to-back requests) the low-priority cycle keeps yielding
+-- and would otherwise make no progress at all.  Capping the yield lets a bulk
+-- caller through at least once per this interval even under sustained
+-- high-priority load.  Kept short (≈ one normal high-priority request) so bulk
+-- work — a range backfill fans out into many bounded sub-requests, each its own
+-- cycle — still advances at ~1 request per interval instead of stalling, while
+-- the live trader loses at most a single short chunk of latency when it
+-- preempts.
 lpYieldBudgetMicros :: Int
-lpYieldBudgetMicros = 5 * 1000 * 1000  -- 5s
+lpYieldBudgetMicros = 1000 * 1000  -- 1s
 
 -- | Lazily open (once) the descriptor backing 'crossProcLockPath'.
 --
