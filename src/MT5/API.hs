@@ -73,6 +73,7 @@ import           Data.Text                   (Text)
 import qualified Data.Text                   as T
 import           Data.Time                   (NominalDiffTime, UTCTime,
                                               addUTCTime, getCurrentTime)
+import           Data.Time.Clock.POSIX       (utcTimeToPOSIXSeconds)
 import           Data.Time.Format            (defaultTimeLocale, formatTime)
 import           EasyLogger                  (logDebug, logDebugText, logInfo,
                                               logInfoText, logWarning,
@@ -85,7 +86,8 @@ import           System.Timeout              (timeout)
 import           MT5.API.Internal            (sendRequestViaFile)
 import           MT5.Communication.File      (getMT5FilesDirDefault,
                                               resetMT5Files)
-import           MT5.Communication           (receive, send, unpickle', withMT5Lock)
+import           MT5.Communication           (receive, reconnectDaemon, send,
+                                              unpickle', withMT5Lock)
 import           MT5.Communication.PyProc    (MT5Priority (..),
                                               mt5CycleTimeoutMicros,
                                               setMT5Priority)
@@ -149,7 +151,11 @@ import           MT5.Data.SymbolInfo         (SymbolCalcMode (..),
                                               SymbolTradeMode (..))
 import           MT5.Data.TradeRequestAction (TradeRequestAction (..))
 import           MT5.Error                   (MT5Error (..))
-import           MT5.Util                    (mscToUTCTime, secondsToUTCTime)
+import           MT5.Util                    (mscToUTCTime,
+                                             secondsToUTCTime,
+                                             serverMscToUTCTime,
+                                             serverSecondsToUTCTime,
+                                             utcToServerTime)
 
 type Symbol = String
 type Ticket = Integer
@@ -665,10 +671,10 @@ positionsGetViaPython = do
     replicateM len
       $ TradePosition
           <$> (unpickle' "Int" <$> receive)
-          <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
-          <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
-          <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
-          <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (serverSecondsToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (serverMscToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (serverSecondsToUTCTime . unpickle' "Integer" <$> receive)
+          <*> (serverMscToUTCTime . unpickle' "Integer" <$> receive)
           <*> (toEnum . unpickle' "Int" <$> receive)
           <*> (unpickle' "Int" <$> receive)
           <*> (unpickle' "Int" <$> receive)
@@ -1049,8 +1055,8 @@ ordersGetViaPython mInstr mTicket = do
     replicateM len
           $ TradeOrder
               <$> (unpickle' "Int" <$> receive)
-              <*> (secondsToUTCTime . unpickle' "Integer" <$> receive)
-              <*> (mscToUTCTime . unpickle' "Integer" <$> receive)
+              <*> (serverSecondsToUTCTime . unpickle' "Integer" <$> receive)
+              <*> (serverMscToUTCTime . unpickle' "Integer" <$> receive)
               <*> (unpickle' "Int" <$> receive)
               <*> (toEnum . unpickle' "Int" <$> receive)
               <*> (unpickle' "Integer" <$> receive)
@@ -1345,7 +1351,13 @@ currentPriceGET symbol = withMT5Lock $ do
       then return $ Left (drop 6 result) -- Remove "error:" prefix
       else parseCurrentPriceFromFields symbol
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res
 
 -- | Parse current price by reading individual fields from Python server
@@ -1356,12 +1368,15 @@ parseCurrentPriceFromFields symbol = do
   ask        <- unpickle' "Double" <$> receive  -- ask price
   lastPrice  <- unpickle' "Double" <$> receive  -- last price
   volume     <- unpickle' "Int" <$> receive     -- volume
-  timeEpoch  <- unpickle' "Integer" <$> receive -- time (seconds)
-  timeMsc    <- unpickle' "Integer" <$> receive -- time_msc (milliseconds)
+  _timeEpoch <- (unpickle' "Integer" <$> receive) :: IO Integer -- time (broker-server tz; ignored)
+  _timeMsc   <- (unpickle' "Integer" <$> receive) :: IO Integer -- time_msc (broker-server tz; ignored)
   flags      <- unpickle' "Int" <$> receive     -- flags
   volReal    <- unpickle' "Double" <$> receive  -- volume_real
 
-  let utcTime = secondsToUTCTime timeEpoch      -- Convert using existing utility
+  -- 'symbol_info_tick' emits the tick time in the broker-server wall-clock (no
+  -- UTC anchor), so it is discarded: the poll is stamped with the client UTC
+  -- clock instead.  The tick's prices are what downstream consumes.
+  now <- getCurrentTime
   let spread = ask - bid                        -- Calculate spread
 
   return $ Right $ CurrentPrice
@@ -1371,8 +1386,8 @@ parseCurrentPriceFromFields symbol = do
     , cpSpread     = spread
     , cpLast       = lastPrice
     , cpVolume     = volume
-    , cpTime       = utcTime
-    , cpTimeMsc    = timeMsc
+    , cpTime       = now
+    , cpTimeMsc    = round (utcTimeToPOSIXSeconds now * 1000)
     , cpFlags      = flags
     , cpVolumeReal = volReal
     }
@@ -1891,15 +1906,23 @@ fetchRangeChunk symbol granularity fromTime toTime = withMT5Lock $ do
     send "COPY_RATES_RANGE"
     send symbol
     send $ show $ toMT5TimeframeInt granularity
-    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
-    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" toTime
+    -- MT5 interprets the bare (timezone-less) datetime string in server-local
+    -- time, so shift the UTC window into the broker trade-server timezone.
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" (utcToServerTime fromTime)
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" (utcToServerTime toTime)
     -- Read response following established pattern (like currentPriceGET)
     result <- unpickle' "String" <$> receive
     if "error:" `isPrefixOf` result
       then return $ Left (drop 6 result)
       else parseCandleDataFromFields symbol
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res
 
 -- | Get candlestick data using count from specific time
@@ -1924,14 +1947,22 @@ getCandleDataFrom symbol granularity fromTime count = withMT5Lock $ do
     send "COPY_RATES_FROM"
     send symbol
     send $ show $ toMT5TimeframeInt granularity
-    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" fromTime
+    -- Shift the UTC anchor into the broker trade-server timezone (MT5 reads the
+    -- bare datetime as server-local).
+    send $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" (utcToServerTime fromTime)
     send $ show count
     result <- unpickle' "String" <$> receive
     if "error:" `isPrefixOf` result
       then return $ Left (drop 6 result)
       else parseCandleDataFromFields symbol
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res
 
 -- | Get recent candlestick data (most recent count candles)
@@ -1963,7 +1994,13 @@ getCandleDataRecent symbol granularity count = withMT5Lock $ do
       then return $ Left (drop 6 result)
       else parseCandleDataFromFields symbol
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res
 
 -- | Parse candle data by reading individual fields from Python server
@@ -1983,7 +2020,7 @@ parseCandleDataFromFields symbol = do
   where
     readSingleCandle :: IO MT5Candle
     readSingleCandle = MT5Candle
-      <$> (secondsToUTCTime . unpickle' "Integer" <$> receive)  -- time (using existing utility)
+      <$> (serverSecondsToUTCTime . unpickle' "Integer" <$> receive)  -- time (server tz -> UTC)
       <*> (unpickle' "Double" <$> receive)                     -- open
       <*> (unpickle' "Double" <$> receive)                     -- high
       <*> (unpickle' "Double" <$> receive)                     -- low
@@ -2013,7 +2050,13 @@ copyTicksFrom symbol fromTime count flags = withMT5Lock $ do
       then return $ Left (drop 6 result)
       else parseTickDataFromFields
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res
 
 -- | Retrieve all ticks within a UTC time range.
@@ -2036,7 +2079,13 @@ copyTicksRange symbol fromTime toTime flags = withMT5Lock $ do
       then return $ Left (drop 6 result)
       else parseTickDataFromFields
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res
 
 parseTickDataFromFields :: IO (Either String [MT5Tick])
@@ -2085,5 +2134,11 @@ historyDealsRealizedForPosition positionId = withMT5Lock $ do
           return (profit + swap + commission + fee)
         return $ Right (sum vals)
   case outcome of
-    Left (e :: SomeException) -> return $ Left (show e)
+    Left (e :: SomeException) -> do
+      -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
+      -- only partially consumed; leftover framed objects stay buffered on the
+      -- socket and would desync every subsequent request/response cycle. Drop
+      -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
     Right res                 -> return res

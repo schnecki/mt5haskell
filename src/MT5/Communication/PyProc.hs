@@ -6,6 +6,7 @@ module MT5.Communication.PyProc
     , mt5DaemonOwner
     , withMT5Lock
     , registerReconnectAction
+    , reconnectDaemon
     , MT5TimeoutException (..)
     , mt5CycleTimeoutMicros
     , MT5Priority (..)
@@ -76,6 +77,18 @@ pyProcReconnectAction = unsafePerformIO $ newIORef (return ())
 -- | Register the reconnect action (called by 'MT5.Init' after each successful connect).
 registerReconnectAction :: IO () -> IO ()
 registerReconnectAction = writeIORef pyProcReconnectAction
+
+-- | Force a fresh daemon connection, dropping the current socket.
+--
+-- Runs the reconnect action registered by 'MT5.Init'.  Used by fetch cycles
+-- that caught an in-cycle exception (e.g. a pickle parse failure): such a
+-- failure means the reply was only partially consumed, so leftover framed
+-- objects remain buffered on the socket and would desync every subsequent
+-- request/response cycle.  Dropping and re-opening the socket discards that
+-- buffer so the next cycle starts aligned.  A no-op until 'MT5.Init' registers
+-- the action.
+reconnectDaemon :: IO ()
+reconnectDaemon = readIORef pyProcReconnectAction >>= id
 
 -- | Thrown when a full MT5 request/response cycle exceeds
 -- 'mt5CycleTimeoutMicros' twice (initial attempt plus one reconnect retry).

@@ -8,6 +8,7 @@ module MT5.Communication.Python
     , pythonCode
     , withMT5Lock
     , registerReconnectAction
+    , reconnectDaemon
     , MT5TimeoutException (..)
     ) where
 
@@ -25,7 +26,8 @@ import           System.IO
 import           System.IO.Error        (mkIOError, resourceVanishedErrorType)
 
 import           MT5.Communication.PyProc (MT5TimeoutException (..), PyProc (..),
-                                           pyProc, registerReconnectAction,
+                                           pyProc, reconnectDaemon,
+                                           registerReconnectAction,
                                            withMT5Lock)
 
 
