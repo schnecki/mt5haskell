@@ -31,6 +31,8 @@ dependencies:
 - bytestring
 - python-pickle
 - time
+- tz            # IANA per-instant UTC offset (DST-exact, sub-hour) for broker server clock
+- tzdata        # Compiled-in IANA zone database (TZLabel enum, pure tzByLabel)
 - filepath
 - file-embed
 - temporary

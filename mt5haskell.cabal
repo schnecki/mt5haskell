@@ -1,6 +1,6 @@
 cabal-version: 2.2
 
--- This file has been generated from package.yaml by hpack version 0.38.1.
+-- This file has been generated from package.yaml by hpack version 0.39.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -87,6 +87,8 @@ library
     , text
     , time
     , transformers
+    , tz
+    , tzdata
     , unix
   default-language: Haskell2010
 
@@ -119,6 +121,8 @@ executable mt5haskell
     , text
     , time
     , transformers
+    , tz
+    , tzdata
     , unix
   default-language: Haskell2010
 
@@ -182,5 +186,7 @@ test-suite mt5haskell-test
     , text
     , time
     , transformers
+    , tz
+    , tzdata
     , unix
   default-language: Haskell2010

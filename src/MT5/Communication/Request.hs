@@ -41,10 +41,11 @@ module MT5.Communication.Request
     ) where
 
 import           Control.DeepSeq (NFData)
-import           Data.Aeson      (ToJSON(..), Value(..), object, (.=))
+import           Data.Aeson      (ToJSON(..), object, (.=))
 import           Data.Text       (Text)
 import qualified Data.Text       as T
 import           Data.Time.Clock (UTCTime)
+import           Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import           GHC.Generics    (Generic)
 
 import           MT5.Data.OrderType (OrderType, orderTypeToInt)
@@ -278,15 +279,23 @@ instance ToJSON CandlesGetRequest where
     [ "symbol"    .= candlesGetSymbol req
     , "timeframe" .= candlesGetTimeframe req
     , "mode"      .= modeStr (candlesGetMode req)
-    , "start"     .= candlesGetStart req
-    , "end"       .= candlesGetEnd req
+      -- The MQL5 EA reads @start@/@end@ as integer @datetime@ (epoch seconds in
+      -- broker-server local time), so serialise the (already server-shifted)
+      -- 'UTCTime' as a whole-second epoch rather than an ISO string.
+    , "start"     .= fmap epochSeconds (candlesGetStart req)
+    , "end"       .= fmap epochSeconds (candlesGetEnd req)
+      -- Emit both keys: the EA's from_pos handler reads @position@; @pos@ kept
+      -- for backward compatibility.
     , "pos"       .= candlesGetPos req
+    , "position"  .= candlesGetPos req
     , "count"     .= candlesGetCount req
     ]
     where
       modeStr CandleModeRange   = "range" :: Text
       modeStr CandleModeFrom    = "from"
       modeStr CandleModeFromPos = "from_pos"
+      epochSeconds :: UTCTime -> Integer
+      epochSeconds = round . utcTimeToPOSIXSeconds
 
 -- | Smart constructor for CandlesGetRequest
 mkCandlesGetRequest :: Text -> Text -> CandleMode -> Maybe UTCTime -> Maybe UTCTime 

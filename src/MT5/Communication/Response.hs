@@ -209,8 +209,8 @@ instance FromJSON OHLCVCandle where
       <*> o .: "low"
       <*> o .: "close"
       <*> o .: "volume"
-      <*> o .: "spread"
-      <*> o .: "real_volume"
+      <*> o .:? "spread" .!= 0
+      <*> o .:? "real_volume" .!= 0
 
 
 -- | Response from candles_get action

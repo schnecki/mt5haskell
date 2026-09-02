@@ -59,7 +59,7 @@ module MT5.API
 
 import           Control.DeepSeq
 import           Control.Exception           (SomeException, try)
-import           Control.Monad               (replicateM)
+import           Control.Monad               (replicateM, when)
 import           Control.Monad.Except        (ExceptT, runExceptT, throwError)
 import           Control.Monad.IO.Class      (liftIO)
 import           Data.Aeson                  (FromJSON (..), Value, decode,
@@ -79,6 +79,7 @@ import           EasyLogger                  (logDebug, logDebugText, logInfo,
                                               logInfoText, logWarning,
                                               logWarningText)
 import           GHC.Generics                (Generic)
+import           System.IO                   (hPutStrLn, stderr)
 import           System.IO.Unsafe            (unsafePerformIO)
 import           System.Timeout              (timeout)
 
@@ -101,6 +102,8 @@ import           MT5.Communication.Request   (mkAccountInfoRequest,
                                               mkSymbolInfoRequest)
 import qualified MT5.Communication.Request   as Req
 import           MT5.Communication.Response  (AccountInfoResponse (..),
+                                              CandlesGetResponse (..),
+                                              OHLCVCandle (..),
                                               OrderInfoResponse (..),
                                               OrderSendResponse (..),
                                               OrdersGetResponse (..),
@@ -114,7 +117,9 @@ import           MT5.Communication.Types     (ErrorResponse (..), Response (..),
 import           MT5.Config                  (CommunicationChannel (..),
                                               Login (..), communicationChannel,
                                               getConfig,
-                                              positionManagementChannel)
+                                              positionManagementChannel,
+                                              serverTimeZone)
+import           Data.Time.Zones.All         (tzByLabel)
 import           MT5.Data                    (AccountInfo (..),
                                               CurrentPrice (..),
                                               MqlTradeRequest (..),
@@ -152,9 +157,12 @@ import           MT5.Data.SymbolInfo         (SymbolCalcMode (..),
 import           MT5.Data.TradeRequestAction (TradeRequestAction (..))
 import           MT5.Error                   (MT5Error (..))
 import           MT5.Util                    (mscToUTCTime,
+                                             offsetFromServerEpoch,
                                              secondsToUTCTime,
                                              serverMscToUTCTime,
+                                             serverOffsetSeconds,
                                              serverSecondsToUTCTime,
+                                             setServerTZ,
                                              utcToServerTime)
 
 type Symbol = String
@@ -383,8 +391,18 @@ initialize = do
     unpickle' "Bool" <$> receive
   case mRes of
     Nothing    -> return $ Left "INITIALIZE timed out"
-    Just True  -> return $ Right ()
+    Just True  -> installServerTimeZone
     Just False -> Left <$> getError "failed to initialize to account #{}, error code: {}"
+  where
+    -- Fail fast unless the broker trade-server zone is configured: candle
+    -- timestamps are reported in server wall-clock and cannot be converted to
+    -- UTC without it.  Installs the zone into the pure converters on success.
+    installServerTimeZone :: IO (Either String ())
+    installServerTimeZone = do
+      cfg <- getConfig
+      case serverTimeZone cfg of
+        Nothing  -> return $ Left "MT5 server time zone not configured: set MT5.Config.serverTimeZone (e.g. withServerTimeZone Europe__Madrid). Refusing to trade without a zone, as candle timestamps cannot be converted to UTC."
+        Just lbl -> Right () <$ setServerTZ (tzByLabel lbl)
 
 -- | Reset the file bridge by writing empty JSON to both request and response files.
 --
@@ -1368,15 +1386,27 @@ parseCurrentPriceFromFields symbol = do
   ask        <- unpickle' "Double" <$> receive  -- ask price
   lastPrice  <- unpickle' "Double" <$> receive  -- last price
   volume     <- unpickle' "Int" <$> receive     -- volume
-  _timeEpoch <- (unpickle' "Integer" <$> receive) :: IO Integer -- time (broker-server tz; ignored)
+  timeEpoch  <- (unpickle' "Integer" <$> receive) :: IO Integer -- time (broker-server tz)
   _timeMsc   <- (unpickle' "Integer" <$> receive) :: IO Integer -- time_msc (broker-server tz; ignored)
   flags      <- unpickle' "Int" <$> receive     -- flags
   volReal    <- unpickle' "Double" <$> receive  -- volume_real
 
   -- 'symbol_info_tick' emits the tick time in the broker-server wall-clock (no
-  -- UTC anchor), so it is discarded: the poll is stamped with the client UTC
-  -- clock instead.  The tick's prices are what downstream consumes.
+  -- UTC anchor), so the poll itself is stamped with the client UTC clock.  The
+  -- server epoch is not discarded, though: paired against the client clock it
+  -- yields the live broker-server↔UTC offset, cross-checked against the
+  -- configured trade-server zone so a misconfigured zone is caught loudly (any
+  -- broker) instead of silently corrupting candle timestamps.
   now <- getCurrentTime
+  case offsetFromServerEpoch timeEpoch now of
+    Just measured -> do
+      let configured = serverOffsetSeconds now
+      when (abs (measured - configured) > 1800) $
+        hPutStrLn stderr $
+          "[MT5.tz] WARNING: measured broker offset " ++ show measured
+          ++ " disagrees with configured zone offset " ++ show configured
+          ++ " at " ++ show now ++ " — check MT5.Config.serverTimeZone."
+    Nothing -> return ()
   let spread = ask - bid                        -- Calculate spread
 
   return $ Right $ CurrentPrice
@@ -1853,12 +1883,92 @@ cancelTradeOrderViaFile order = do
 maxBarsPerRangeCall :: Int
 maxBarsPerRangeCall = 500
 
+-- | Timeout for a bulk candle file-bridge round-trip.  A wide window (60s) so a
+-- large historical range served in one EA call and written as one file never
+-- times out spuriously; the shared daemon is not held (the EA runs in-terminal).
+candleFileTimeoutMs :: Int
+candleFileTimeoutMs = 60000
+
+-- | EA-friendly timeframe token: the numeric 'ENUM_TIMEFRAMES' constant as text.
+-- Covers every granularity (including M10\/M2\/H2 that the EA's string table
+-- omits); the EA reads it via @data["timeframe"].ToInt()@.
+timeframeText :: MT5Granularity -> Text
+timeframeText = T.pack . show . toMT5TimeframeInt
+
+-- | Route a candle fetch by the configured 'communicationChannel': the EA file
+-- bridge (bulk, one file) when file-based, else the legacy socket protocol.
+withCandleChannel
+  :: IO (Either String MT5CandleData)  -- ^ file-bridge action
+  -> IO (Either String MT5CandleData)  -- ^ python-socket action
+  -> IO (Either String MT5CandleData)
+withCandleChannel viaFile viaPython = do
+  cfg <- getConfig
+  case communicationChannel cfg of
+    FileBridge         -> viaFile
+    FileBridgeCustom{} -> viaFile
+    PythonBridge       -> viaPython
+
+-- | Convert one EA candle (server-local epoch) to an 'MT5Candle' (UTC).
+ohlcvToMT5Candle :: OHLCVCandle -> MT5Candle
+ohlcvToMT5Candle o = MT5Candle
+  (serverSecondsToUTCTime (fromIntegral (candleTime o)))
+  (candleOpen o) (candleHigh o) (candleLow o) (candleClose o)
+  (candleVolume o) (candleSpread o) (candleRealVolume o)
+
+-- | Send a prepared 'Req.CandlesGetRequest' over the file bridge and decode the
+-- single bulk response into 'MT5CandleData'.
+candlesGetViaFile :: String -> Req.CandlesGetRequest -> IO (Either String MT5CandleData)
+candlesGetViaFile symbol req = do
+  result <- runExceptT $ do
+    mResponse <- liftIO $ sendRequestViaFile "candles_get" req candleFileTimeoutMs
+    response  <- liftMaybe (TimeoutError "candles_get" candleFileTimeoutMs) mResponse
+    let mResp = decode (encode $ responseData response) :: Maybe CandlesGetResponse
+    resp <- liftResponseOrTypedError "CandlesGetResponse" response mResp
+    pure $ MT5CandleData (map ohlcvToMT5Candle (candlesGetCandles resp)) symbol
+  pure $ either (Left . show) Right result
+
+-- | File-bridge candle range fetch. The EA runs @CopyRates(from,to)@ in-terminal
+-- (server time), so the UTC window is shifted with 'utcToServerTime'; @count@ is
+-- unused by range mode but must satisfy the request smart constructor.
+getCandleDataRangeViaFile :: String -> MT5Granularity -> UTCTime -> UTCTime -> IO (Either String MT5CandleData)
+getCandleDataRangeViaFile symbol granularity fromTime toTime =
+  case Req.mkCandlesGetRequest (T.pack symbol) (timeframeText granularity) Req.CandleModeRange
+         (Just (utcToServerTime fromTime)) (Just (utcToServerTime toTime)) Nothing 1 of
+    Left e   -> pure (Left (show e))
+    Right rq -> candlesGetViaFile symbol rq
+
+-- | File-bridge @copy_rates_from@ (anchor + count).
+getCandleDataFromViaFile :: String -> MT5Granularity -> UTCTime -> Int -> IO (Either String MT5CandleData)
+getCandleDataFromViaFile symbol granularity fromTime count =
+  case Req.mkCandlesGetRequest (T.pack symbol) (timeframeText granularity) Req.CandleModeFrom
+         (Just (utcToServerTime fromTime)) Nothing Nothing count of
+    Left e   -> pure (Left (show e))
+    Right rq -> candlesGetViaFile symbol rq
+
+-- | File-bridge @copy_rates_from_pos@ (most recent @count@ bars, position 0).
+getCandleDataRecentViaFile :: String -> MT5Granularity -> Int -> IO (Either String MT5CandleData)
+getCandleDataRecentViaFile symbol granularity count =
+  case Req.mkCandlesGetRequest (T.pack symbol) (timeframeText granularity) Req.CandleModeFromPos
+         Nothing Nothing (Just 0) count of
+    Left e   -> pure (Left (show e))
+    Right rq -> candlesGetViaFile symbol rq
+
+-- | Fetch a candle range, dispatching on the configured communication channel:
+-- 'FileBridge'\/'FileBridgeCustom' route through the in-terminal MQL5 EA (one
+-- bulk file per request — the whole array in a single read), 'PythonBridge'
+-- falls back to the legacy socket protocol (field-by-field per candle).
 getCandleDataRange :: String          -- ^ Trading symbol (e.g., "EURUSD")
                    -> MT5Granularity  -- ^ Timeframe for candles
                    -> UTCTime         -- ^ Start time (inclusive)
                    -> UTCTime         -- ^ End time (inclusive)
                    -> IO (Either String MT5CandleData)
-getCandleDataRange symbol granularity fromTime toTime
+getCandleDataRange symbol granularity fromTime toTime =
+  withCandleChannel
+    (getCandleDataRangeViaFile symbol granularity fromTime toTime)
+    (getCandleDataRangeViaPython symbol granularity fromTime toTime)
+
+getCandleDataRangeViaPython :: String -> MT5Granularity -> UTCTime -> UTCTime -> IO (Either String MT5CandleData)
+getCandleDataRangeViaPython symbol granularity fromTime toTime
   | fromTime >= toTime = fetchRangeChunk symbol granularity fromTime toTime
   | otherwise          = go fromTime []
   where
@@ -1942,7 +2052,13 @@ getCandleDataFrom :: String          -- ^ Trading symbol
                   -> UTCTime         -- ^ Start time
                   -> Int             -- ^ Number of candles to retrieve (max 5000)
                   -> IO (Either String MT5CandleData)
-getCandleDataFrom symbol granularity fromTime count = withMT5Lock $ do
+getCandleDataFrom symbol granularity fromTime count =
+  withCandleChannel
+    (getCandleDataFromViaFile symbol granularity fromTime count)
+    (getCandleDataFromViaPython symbol granularity fromTime count)
+
+getCandleDataFromViaPython :: String -> MT5Granularity -> UTCTime -> Int -> IO (Either String MT5CandleData)
+getCandleDataFromViaPython symbol granularity fromTime count = withMT5Lock $ do
   outcome <- try $ do
     send "COPY_RATES_FROM"
     send symbol
@@ -1982,7 +2098,13 @@ getCandleDataRecent :: String          -- ^ Trading symbol
                     -> MT5Granularity  -- ^ Timeframe for candles
                     -> Int             -- ^ Number of recent candles (max 5000)
                     -> IO (Either String MT5CandleData)
-getCandleDataRecent symbol granularity count = withMT5Lock $ do
+getCandleDataRecent symbol granularity count =
+  withCandleChannel
+    (getCandleDataRecentViaFile symbol granularity count)
+    (getCandleDataRecentViaPython symbol granularity count)
+
+getCandleDataRecentViaPython :: String -> MT5Granularity -> Int -> IO (Either String MT5CandleData)
+getCandleDataRecentViaPython symbol granularity count = withMT5Lock $ do
   outcome <- try $ do
     send "COPY_RATES_FROM_POS"
     send symbol

@@ -15,6 +15,7 @@ module MT5.Config
     , withFileBridge
     , withFileBridgeCustom
     , withPythonBridge
+    , withServerTimeZone
     , mt5Config
     , getConfig
     , setConfig
@@ -24,10 +25,10 @@ module MT5.Config
 import           Control.DeepSeq
 import           Data.Default
 import           Data.IORef
+import           Data.Time.Zones.All (TZLabel)
 import           GHC.Generics
-import           System.Directory (getCurrentDirectory)
-import           System.IO.Unsafe (unsafePerformIO)
-
+import           System.Directory    (getCurrentDirectory)
+import           System.IO.Unsafe    (unsafePerformIO)
 
 -- | Communication channel for MT5 interaction
 data CommunicationChannel
@@ -80,6 +81,7 @@ data Config =
     , login                       :: Maybe Login                -- ^ Login information. Nothing means default account.
     , communicationChannel        :: CommunicationChannel       -- ^ How to communicate with MT5 (Python or File)
     , positionManagementChannel   :: CommunicationChannel       -- ^ Separate channel for position management operations (close, modify)
+    , serverTimeZone              :: Maybe TZLabel              -- ^ IANA zone of the broker trade-server wall-clock (one per MT5 process). 'Nothing' is a fatal misconfiguration: 'MT5.API.initialize' fails fast, because candle timestamps cannot be converted to UTC without it.
     } deriving (Show, Eq, NFData, Generic)
 
 
@@ -96,6 +98,7 @@ instance Default Config where
     , login                     = Nothing
     , communicationChannel      = PythonBridge  -- Default to Python (better data completeness)
     , positionManagementChannel = FileBridge    -- Default to FileBridge (reliable position management)
+    , serverTimeZone            = Nothing        -- MUST be set by the caller (see 'withServerTimeZone'); unset is fatal at init.
     }
 
 defaultMT5Config :: Config
@@ -121,6 +124,12 @@ withFileBridgeCustom reqPath respPath config =
 -- | Use Python bridge communication
 withPythonBridge :: Config -> Config
 withPythonBridge config = config { communicationChannel = PythonBridge }
+
+-- | Set the broker trade-server IANA time zone (mandatory for correct candle
+--   timestamp conversion).  One MT5 process connects to exactly one trade server,
+--   so a single zone applies to every symbol on the connection.
+withServerTimeZone :: TZLabel -> Config -> Config
+withServerTimeZone lbl config = config { serverTimeZone = Just lbl }
 
 rootDir :: FilePath
 {-# NOINLINE rootDir #-}

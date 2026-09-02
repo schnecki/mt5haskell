@@ -440,6 +440,11 @@ pipInstallWithEnv env repoPath package = do
 -- so a crash during startup never leaves a false-owner state.
 startMT5 :: Config -> IO Config
 startMT5 config = do
+    -- Publish the caller's config as the global authority so consumers that read
+    -- it via 'getConfig' (e.g. 'MT5.API.initialize', the timestamp converters in
+    -- 'MT5.Util') observe the configured broker trade-server zone, communication
+    -- channels and login rather than the 'def' placeholder.
+    setConfig config
     avail <- isSocketAvailable
     if avail
         then connectAsClient config

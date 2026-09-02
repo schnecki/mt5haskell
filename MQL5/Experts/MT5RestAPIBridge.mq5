@@ -698,7 +698,11 @@ string HandleCandlesGet(CJAVal &data)
    //--- Extract parameters
    string symbol = data["symbol"].ToStr();
    string tfString = data["timeframe"].ToStr();
-   ENUM_TIMEFRAMES timeframe = StringToTimeframe(tfString);
+   // Prefer a numeric ENUM_TIMEFRAMES constant (covers every granularity, e.g.
+   // M10/M2/H2 that the string table omits); fall back to the string table for
+   // legacy callers that still send "M1"/"H1"/... names.
+   long tfInt = data["timeframe"].ToInt();
+   ENUM_TIMEFRAMES timeframe = tfInt > 0 ? (ENUM_TIMEFRAMES)tfInt : StringToTimeframe(tfString);
    string mode = data["mode"].ToStr();
    
    if(EnableLogging)
@@ -737,15 +741,17 @@ string HandleCandlesGet(CJAVal &data)
       return CreateErrorResponse(400, "Invalid mode: " + mode + ". Use 'range', 'from', or 'from_pos'");
    }
    
-   //--- Check if data was copied
-   if(copied <= 0)
+   //--- Only a negative return is a real CopyRates failure; zero bars is a
+   //--- legitimate empty window (market gap / end of data) and must be reported
+   //--- as an empty success so the caller advances instead of retrying forever.
+   if(copied < 0)
    {
       if(EnableLogging)
          Print("Failed to copy rates. Error: ", GetLastError());
       return CreateErrorResponse(404, "Failed to copy rates for " + symbol);
    }
-   
-   //--- Build successful response
+
+   //--- Build successful response (copied may be 0 -> empty candles array)
    CJAVal result;
    result["success"] = true;
    result["count"] = copied;
@@ -765,6 +771,8 @@ string HandleCandlesGet(CJAVal &data)
       candle["low"] = rates[i].low;
       candle["close"] = rates[i].close;
       candle["volume"] = (long)rates[i].tick_volume;
+      candle["spread"] = (long)rates[i].spread;
+      candle["real_volume"] = (double)rates[i].real_volume;
       result["candles"].Add(candle);  // Build directly on result["candles"]
    }
    
