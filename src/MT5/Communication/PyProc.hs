@@ -31,7 +31,8 @@ import           System.IO.Error            (isEOFError,
                                              ioeGetErrorType)
 import           System.IO.Unsafe           (unsafePerformIO)
 import           Text.Read                  (readMaybe)
-import           System.Posix.IO            (handleToFd)
+import           System.Posix.IO            (OpenFileFlags (..), OpenMode (..),
+                                             defaultFileFlags, openFd)
 import           System.Posix.IO.ByteString (LockRequest (..), getLock, setLock,
                                              waitToSetLock)
 import           System.Posix.Types         (Fd, FileOffset)
@@ -236,7 +237,8 @@ getCrossProcFd :: IO (Maybe Fd)
 getCrossProcFd = modifyMVar mt5CrossProcFd $ \case
   Just fd -> return (Just fd, Just fd)
   Nothing -> do
-    r <- try (openFile crossProcLockPath ReadWriteMode >>= handleToFd)
+    r <- try (openFd crossProcLockPath ReadWrite
+                defaultFileFlags { creat = Just 0o600 })
     case r of
       Right fd               -> return (Just fd, Just fd)
       Left (_ :: IOException) -> return (Nothing, Nothing)
