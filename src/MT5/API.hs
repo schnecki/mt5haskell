@@ -71,8 +71,11 @@ import           Data.List                   (filter, find, isPrefixOf)
 import           Data.Maybe                  (fromMaybe)
 import           Data.Text                   (Text)
 import qualified Data.Text                   as T
+import           Data.IORef                  (IORef, newIORef, readIORef,
+                                              writeIORef)
 import           Data.Time                   (NominalDiffTime, UTCTime,
-                                              addUTCTime, getCurrentTime)
+                                              addUTCTime, diffUTCTime,
+                                              getCurrentTime)
 import           Data.Time.Clock.POSIX       (utcTimeToPOSIXSeconds)
 import           Data.Time.Format            (defaultTimeLocale, formatTime)
 import           EasyLogger                  (logDebug, logDebugText, logInfo,
@@ -153,7 +156,8 @@ import           MT5.Data.SymbolInfo         (SymbolCalcMode (..),
                                               SymbolOrders (..),
                                               SymbolSwapMode (..),
                                               SymbolTradeExecutionMode (..),
-                                              SymbolTradeMode (..))
+                                              SymbolTradeMode (..),
+                                              toSymbolCalcMode)
 import           MT5.Data.TradeRequestAction (TradeRequestAction (..))
 import           MT5.Error                   (MT5Error (..))
 import           MT5.Util                    (mscToUTCTime,
@@ -497,33 +501,33 @@ accountInfoViaFile = do
 convertAccountInfoResponse :: AccountInfoResponse -> AccountInfo
 convertAccountInfoResponse resp = AccountInfo
   { accInfoLogin              = accountInfoLogin resp
-  , accInfoTrade_mode         = ACCOUNT_TRADE_MODE_DEMO  -- Default, not in response
+  , accInfoTrade_mode         = maybe ACCOUNT_TRADE_MODE_DEMO toEnum (accountInfoTradeMode resp)
   , accInfoLeverage           = accountInfoLeverage resp
-  , accInfoLimit_orders       = 0  -- Not in file response
-  , accInfoMargin_so_mode     = ACCOUNT_STOPOUT_MODE_PERCENT  -- Default
+  , accInfoLimit_orders       = fromMaybe 0 (accountInfoLimitOrders resp)
+  , accInfoMargin_so_mode     = ACCOUNT_STOPOUT_MODE_PERCENT  -- Default (EA does not expose SO_MODE)
   , accInfoTrade_allowed      = accountInfoTradeAllowed resp
   , accInfoTrade_expert       = accountInfoTradeExpert resp
-  , accInfoMargin_mode        = ACCOUNT_MARGIN_MODE_RETAIL_NETTING  -- Default
-  , accInfoCurrency_digits    = 2  -- Default for most currencies
-  , accInfoFifo_close         = False  -- Default
+  , accInfoMargin_mode        = maybe ACCOUNT_MARGIN_MODE_RETAIL_NETTING toEnum (accountInfoMarginMode resp)
+  , accInfoCurrency_digits    = fromMaybe 2 (accountInfoCurrencyDigits resp)
+  , accInfoFifo_close         = fromMaybe False (accountInfoFifoClose resp)
   , accInfoBalance            = accountInfoBalance resp
-  , accInfoCredit             = 0.0  -- Not in file response
+  , accInfoCredit             = fromMaybe 0.0 (accountInfoCredit resp)
   , accInfoProfit             = accountInfoProfit resp
   , accInfoEquity             = accountInfoEquity resp
   , accInfoMargin             = accountInfoMargin resp
   , accInfoMargin_free        = accountInfoMarginFree resp
   , accInfoMargin_level       = accountInfoMarginLevel resp
-  , accInfoMargin_so_call     = 0.0  -- Not in file response
-  , accInfoMargin_so_so       = 0.0  -- Not in file response
-  , accInfoMargin_initial     = 0.0  -- Not in file response
-  , accInfoMargin_maintenance = 0.0  -- Not in file response
+  , accInfoMargin_so_call     = fromMaybe 0.0 (accountInfoMarginSoCall resp)
+  , accInfoMargin_so_so       = fromMaybe 0.0 (accountInfoMarginSoSo resp)
+  , accInfoMargin_initial     = fromMaybe 0.0 (accountInfoMarginInitial resp)
+  , accInfoMargin_maintenance = fromMaybe 0.0 (accountInfoMarginMaintenance resp)
   , accInfoAssets             = 0.0  -- Not in file response
   , accInfoLiabilities        = 0.0  -- Not in file response
   , accInfoCommission_blocked = 0.0  -- Not in file response
   , accInfoName               = T.unpack $ accountInfoName resp
   , accInfoServer             = T.unpack $ accountInfoServer resp
   , accInfoCurrency           = T.unpack $ accountInfoCurrency resp
-  , accInfoCompany            = ""  -- Not in file response
+  , accInfoCompany            = maybe "" T.unpack (accountInfoCompany resp)
   }
 
 -- | Get account info via Python bridge (legacy compatibility)
@@ -657,13 +661,13 @@ positionsGetViaFile mSymbol = do
 convertPositionInfoResponse :: PositionInfoResponse -> TradePosition
 convertPositionInfoResponse resp = TradePosition
   { trPosTicket          = positionTicket resp
-  , trPosTime            = secondsToUTCTime 0  -- Not available in file response
-  , trPosTime_msc        = mscToUTCTime 0  -- Not available in file response
-  , trPosTime_update     = secondsToUTCTime 0  -- Not available in file response
-  , trPosTime_update_msc = mscToUTCTime 0  -- Not available in file response
+  , trPosTime            = serverSecondsToUTCTime (fromMaybe 0 (positionTime resp))
+  , trPosTime_msc        = serverMscToUTCTime (fromMaybe 0 (positionTimeMsc resp))
+  , trPosTime_update     = serverSecondsToUTCTime (fromMaybe 0 (positionTimeUpdate resp))
+  , trPosTime_update_msc = serverMscToUTCTime (fromMaybe 0 (positionTimeUpdateMsc resp))
   , trPosType            = toEnum (positionType resp)
   , trPosMagic           = positionMagic resp
-  , trPosIdentifier      = 0  -- Not available in file response
+  , trPosIdentifier      = maybe 0 fromIntegral (positionIdentifier resp)
   , trPosReason          = POSITION_REASON_CLIENT  -- Default
   , trPosVolume          = positionVolume resp
   , trPosPriceOpen       = positionPriceOpen resp
@@ -1104,13 +1108,13 @@ convertOrderInfoResponse resp =
   let now = unsafePerformIO getCurrentTime
   in TradeOrder
     { tradeOrderTicket          = orderTicket resp
-    , tradeOrderTime_setup      = now  -- Not in EA response
-    , tradeOrderTime_setup_msc  = now  -- Not in EA response
-    , tradeOrderTime_expiration = 0    -- Not in EA response
+    , tradeOrderTime_setup      = maybe now serverSecondsToUTCTime (orderTimeSetup resp)
+    , tradeOrderTime_setup_msc  = maybe now (serverMscToUTCTime . (* 1000)) (orderTimeSetup resp)
+    , tradeOrderTime_expiration = maybe 0 fromIntegral (orderTimeExpiration resp)
     , tradeOrderType            = toEnum (orderType resp)
-    , tradeOrderType_time       = 0    -- Not in EA response
-    , tradeOrderType_filling    = 0    -- Not in EA response
-    , tradeOrderState           = ORDER_STATE_STARTED  -- Default (not in EA response)
+    , tradeOrderType_time       = maybe 0 fromIntegral (orderTypeTime resp)
+    , tradeOrderType_filling    = fromMaybe 0 (orderTypeFilling resp)
+    , tradeOrderState           = maybe ORDER_STATE_STARTED toEnum (orderState resp)
     , tradeOrderMagic           = orderMagic resp
     , tradeOrderVolume_current  = orderVolume resp
     , tradeOrderPrice_open      = orderPriceOpen resp
@@ -1235,18 +1239,18 @@ convertSymbolInfoResponse resp =
   , symInfoSpread                  = symbolInfoSpread resp
   , symInfoSpreadFloat             = False
   , symInfoTicksBookdepth          = 0
-  , symInfoTradeCalcMode           = SYMBOL_CALC_MODE_FOREX
-  , symInfoTradeMode               = SYMBOL_TRADE_MODE_FULL
+  , symInfoTradeCalcMode           = maybe SYMBOL_CALC_MODE_FOREX toSymbolCalcMode (symbolInfoTradeCalcMode resp)
+  , symInfoTradeMode               = maybe SYMBOL_TRADE_MODE_FULL toEnum (symbolInfoTradeMode resp)
   , symInfoStartTime               = now
   , symInfoExpirationTime          = now
-  , symInfoTradeStopsLevel         = 0
-  , symInfoTradeFreezeLevel        = 0
-  , symInfoTradeExemode            = SYMBOL_TRADE_EXECUTION_MARKET
+  , symInfoTradeStopsLevel         = fromMaybe 0 (symbolInfoTradeStopsLevel resp)
+  , symInfoTradeFreezeLevel        = fromMaybe 0 (symbolInfoTradeFreezeLevel resp)
+  , symInfoTradeExemode            = maybe SYMBOL_TRADE_EXECUTION_MARKET toEnum (symbolInfoTradeExemode resp)
   , symInfoSwapMode                = SYMBOL_SWAP_MODE_DISABLED
   , symInfoSwapRollover3days       = 3
   , symInfoMarginHedgedUseLeg      = True
-  , symInfoExpirationMode          = 15
-  , symInfoFillingMode             = 1
+  , symInfoExpirationMode          = fromMaybe 15 (symbolInfoExpirationMode resp)
+  , symInfoFillingMode             = fromMaybe 1 (symbolInfoFillingMode resp)
   , symInfoOrderMode               = 119
   , symInfoOrderGtcMode            = 0
   , symInfoOptionMode              = SYMBOL_OPTION_MODE_EUROPEAN
@@ -1265,22 +1269,22 @@ convertSymbolInfoResponse resp =
   , symInfoVolumelowReal           = 0.0
   , symInfoOptionStrike            = 0.0
   , symInfoPoint                   = symbolInfoPoint resp
-  , symInfoTradeTickValue          = 0.0
-  , symInfoTradeTickValueProfit    = 0.0
-  , symInfoTradeTickValueLoss      = 0.0
-  , symInfoTradeTickSize           = 0.01
-  , symInfoTradeContractSize       = 100000.0
+  , symInfoTradeTickValue          = fromMaybe 0.0 (symbolInfoTickValue resp)
+  , symInfoTradeTickValueProfit    = fromMaybe 0.0 (symbolInfoTickValueProfit resp)
+  , symInfoTradeTickValueLoss      = fromMaybe 0.0 (symbolInfoTickValueLoss resp)
+  , symInfoTradeTickSize           = fromMaybe 0.01 (symbolInfoTickSize resp)
+  , symInfoTradeContractSize       = fromMaybe 100000.0 (symbolInfoContractSize resp)
   , symInfoTradeAccruedInterest    = 0.0
   , symInfoTradeFaceValue          = 0.0
   , symInfoTradeLiquidityRate      = 0.0
-  , symInfoVolumeMin               = 0.01
-  , symInfoVolumeMax               = 25.0
-  , symInfoVolumeStep              = 0.01
-  , symInfoVolumeLimit             = 60.0
-  , symInfoSwapLong                = 0.0
-  , symInfoSwapShort               = 0.0
-  , symInfoMarginInitial           = 0.0
-  , symInfoMarginMaintenance       = 0.0
+  , symInfoVolumeMin               = fromMaybe 0.01 (symbolInfoVolumeMin resp)
+  , symInfoVolumeMax               = fromMaybe 25.0 (symbolInfoVolumeMax resp)
+  , symInfoVolumeStep              = fromMaybe 0.01 (symbolInfoVolumeStep resp)
+  , symInfoVolumeLimit             = fromMaybe 60.0 (symbolInfoVolumeLimit resp)
+  , symInfoSwapLong                = fromMaybe 0.0 (symbolInfoSwapLong resp)
+  , symInfoSwapShort               = fromMaybe 0.0 (symbolInfoSwapShort resp)
+  , symInfoMarginInitial           = fromMaybe 0.0 (symbolInfoMarginInitial resp)
+  , symInfoMarginMaintenance       = fromMaybe 0.0 (symbolInfoMarginMaintenance resp)
   , symInfoSessionVolume           = 0.0
   , symInfoSessionTurnover         = 0.0
   , symInfoSessionInterest         = 0.0
@@ -1305,17 +1309,17 @@ convertSymbolInfoResponse resp =
   , symInfoPriceSensitivity        = 0.0
   , symInfoBasis                   = ""
   , symInfoCategory                = ""
-  , symInfoCurrencyBase            = ""
-  , symInfoCurrencyProfit          = ""
-  , symInfoCurrencyMargin          = ""
+  , symInfoCurrencyBase            = maybe "" T.unpack (symbolInfoCurrencyBase resp)
+  , symInfoCurrencyProfit          = maybe "" T.unpack (symbolInfoCurrencyProfit resp)
+  , symInfoCurrencyMargin          = maybe "" T.unpack (symbolInfoCurrencyMargin resp)
   , symInfoBank                    = ""
-  , symInfoDescription             = T.unpack $ symbolInfoSymbol resp
+  , symInfoDescription             = maybe (T.unpack $ symbolInfoSymbol resp) T.unpack (symbolInfoDescription resp)
   , symInfoExchange                = ""
   , symInfoFormula                 = ""
   , symInfoIsin                    = ""
   , symInfoName                    = T.unpack $ symbolInfoSymbol resp
   , symInfoPage                    = ""
-  , symInfoPath                    = ""
+  , symInfoPath                    = maybe "" T.unpack (symbolInfoPath resp)
   }
 
 -- | Select a symbol in the MetaTrader 5 terminal.
@@ -1379,6 +1383,12 @@ currentPriceGET symbol = withMT5Lock $ do
     Right res                 -> return res
 
 -- | Parse current price by reading individual fields from Python server
+-- | Timestamp of the last emitted @[MT5.tz]@ zone-disagreement warning, used to
+-- rate-limit the warning to once per 10 minutes (see 'parseCurrentPriceFromFields').
+{-# NOINLINE lastTzWarnRef #-}
+lastTzWarnRef :: IORef (Maybe UTCTime)
+lastTzWarnRef = unsafePerformIO (newIORef Nothing)
+
 -- Following the established pattern of reading fields sequentially
 parseCurrentPriceFromFields :: Symbol -> IO (Either String CurrentPrice)
 parseCurrentPriceFromFields symbol = do
@@ -1401,11 +1411,22 @@ parseCurrentPriceFromFields symbol = do
   case offsetFromServerEpoch timeEpoch now of
     Just measured -> do
       let configured = serverOffsetSeconds now
-      when (abs (measured - configured) > 1800) $
-        hPutStrLn stderr $
-          "[MT5.tz] WARNING: measured broker offset " ++ show measured
-          ++ " disagrees with configured zone offset " ++ show configured
-          ++ " at " ++ show now ++ " — check MT5.Config.serverTimeZone."
+      -- A single sample cannot tell a misconfigured server zone (a stable
+      -- offset error) from a stale feed on a closed market (a frozen broker
+      -- epoch, so the apparent offset drifts with the wall clock and trips the
+      -- threshold on every poll).  Rate-limit to at most once per 10 minutes so
+      -- a genuine persistent misconfiguration still surfaces without flooding
+      -- the log with weekend/holiday noise.
+      when (abs (measured - configured) > 1800) $ do
+        prev <- readIORef lastTzWarnRef
+        when (maybe True (\t -> diffUTCTime now t > 600) prev) $ do
+          writeIORef lastTzWarnRef (Just now)
+          hPutStrLn stderr $
+            "[MT5.tz] WARNING: measured broker offset " ++ show measured
+            ++ " disagrees with configured zone offset " ++ show configured
+            ++ " at " ++ show now ++ " — check MT5.Config.serverTimeZone"
+            ++ " (rate-limited to once/10min; persistent only during market hours"
+            ++ " indicates a real zone misconfig — a stale weekend feed is benign)."
     Nothing -> return ()
   let spread = ask - bid                        -- Calculate spread
 

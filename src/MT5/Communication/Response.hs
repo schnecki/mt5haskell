@@ -140,6 +140,31 @@ data SymbolInfoResponse = SymbolInfoResponse
   , symbolInfoDigits  :: !Int
   , symbolInfoSpread  :: !Int
   , symbolInfoPoint   :: !Double
+  , symbolInfoContractSize      :: !(Maybe Double)  -- ^ SYMBOL_TRADE_CONTRACT_SIZE, when the EA reports it.
+  , symbolInfoVolumeMin         :: !(Maybe Double)  -- ^ SYMBOL_VOLUME_MIN, minimum tradable volume.
+  , symbolInfoVolumeMax         :: !(Maybe Double)  -- ^ SYMBOL_VOLUME_MAX, maximum tradable volume.
+  , symbolInfoVolumeStep        :: !(Maybe Double)  -- ^ SYMBOL_VOLUME_STEP, volume increment (drives volume precision).
+  , symbolInfoVolumeLimit       :: !(Maybe Double)  -- ^ SYMBOL_VOLUME_LIMIT, aggregate volume cap.
+  , symbolInfoTradeCalcMode     :: !(Maybe Int)     -- ^ SYMBOL_TRADE_CALC_MODE, drives instrument-type classification.
+  , symbolInfoTradeMode         :: !(Maybe Int)     -- ^ SYMBOL_TRADE_MODE, trading permission.
+  , symbolInfoTradeExemode      :: !(Maybe Int)     -- ^ SYMBOL_TRADE_EXEMODE, execution mode.
+  , symbolInfoTradeStopsLevel   :: !(Maybe Int)     -- ^ SYMBOL_TRADE_STOPS_LEVEL, min SL/TP distance (points).
+  , symbolInfoTradeFreezeLevel  :: !(Maybe Int)     -- ^ SYMBOL_TRADE_FREEZE_LEVEL, freeze distance (points).
+  , symbolInfoFillingMode       :: !(Maybe Int)     -- ^ SYMBOL_FILLING_MODE, allowed fill policies bitmask.
+  , symbolInfoExpirationMode    :: !(Maybe Int)     -- ^ SYMBOL_EXPIRATION_MODE, allowed expiration types bitmask.
+  , symbolInfoTickValue         :: !(Maybe Double)  -- ^ SYMBOL_TRADE_TICK_VALUE, account-currency value per tick.
+  , symbolInfoTickValueProfit   :: !(Maybe Double)  -- ^ SYMBOL_TRADE_TICK_VALUE_PROFIT.
+  , symbolInfoTickValueLoss     :: !(Maybe Double)  -- ^ SYMBOL_TRADE_TICK_VALUE_LOSS.
+  , symbolInfoTickSize          :: !(Maybe Double)  -- ^ SYMBOL_TRADE_TICK_SIZE, minimal price change.
+  , symbolInfoMarginInitial     :: !(Maybe Double)  -- ^ SYMBOL_MARGIN_INITIAL, drives margin-rate calc.
+  , symbolInfoMarginMaintenance :: !(Maybe Double)  -- ^ SYMBOL_MARGIN_MAINTENANCE.
+  , symbolInfoSwapLong          :: !(Maybe Double)  -- ^ SYMBOL_SWAP_LONG.
+  , symbolInfoSwapShort         :: !(Maybe Double)  -- ^ SYMBOL_SWAP_SHORT.
+  , symbolInfoCurrencyBase      :: !(Maybe Text)    -- ^ SYMBOL_CURRENCY_BASE.
+  , symbolInfoCurrencyProfit    :: !(Maybe Text)    -- ^ SYMBOL_CURRENCY_PROFIT.
+  , symbolInfoCurrencyMargin    :: !(Maybe Text)    -- ^ SYMBOL_CURRENCY_MARGIN.
+  , symbolInfoDescription       :: !(Maybe Text)    -- ^ SYMBOL_DESCRIPTION.
+  , symbolInfoPath              :: !(Maybe Text)    -- ^ SYMBOL_PATH.
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON SymbolInfoResponse where
@@ -152,6 +177,31 @@ instance FromJSON SymbolInfoResponse where
       <*> o .: "digits"
       <*> o .: "spread"
       <*> o .: "point"
+      <*> o .:? "trade_contract_size"
+      <*> o .:? "volume_min"
+      <*> o .:? "volume_max"
+      <*> o .:? "volume_step"
+      <*> o .:? "volume_limit"
+      <*> o .:? "trade_calc_mode"
+      <*> o .:? "trade_mode"
+      <*> o .:? "trade_exemode"
+      <*> o .:? "trade_stops_level"
+      <*> o .:? "trade_freeze_level"
+      <*> o .:? "filling_mode"
+      <*> o .:? "expiration_mode"
+      <*> o .:? "tick_value"
+      <*> o .:? "tick_value_profit"
+      <*> o .:? "tick_value_loss"
+      <*> o .:? "tick_size"
+      <*> o .:? "margin_initial"
+      <*> o .:? "margin_maintenance"
+      <*> o .:? "swap_long"
+      <*> o .:? "swap_short"
+      <*> o .:? "currency_base"
+      <*> o .:? "currency_profit"
+      <*> o .:? "currency_margin"
+      <*> o .:? "description"
+      <*> o .:? "path"
 
 
 -- | Response from symbol_select action
@@ -252,6 +302,17 @@ data AccountInfoResponse = AccountInfoResponse
   , accountInfoServer       :: !Text
   , accountInfoTradeAllowed :: !Bool
   , accountInfoTradeExpert  :: !Bool
+  , accountInfoTradeMode         :: !(Maybe Int)     -- ^ ACCOUNT_TRADE_MODE (demo/contest/real).
+  , accountInfoMarginMode        :: !(Maybe Int)     -- ^ ACCOUNT_MARGIN_MODE (retail netting/hedging/exchange).
+  , accountInfoCurrencyDigits    :: !(Maybe Int)     -- ^ ACCOUNT_CURRENCY_DIGITS.
+  , accountInfoLimitOrders       :: !(Maybe Int)     -- ^ ACCOUNT_LIMIT_ORDERS.
+  , accountInfoFifoClose         :: !(Maybe Bool)    -- ^ ACCOUNT_FIFO_CLOSE.
+  , accountInfoCredit            :: !(Maybe Double)  -- ^ ACCOUNT_CREDIT.
+  , accountInfoMarginSoCall      :: !(Maybe Double)  -- ^ ACCOUNT_MARGIN_SO_CALL (margin-call level).
+  , accountInfoMarginSoSo        :: !(Maybe Double)  -- ^ ACCOUNT_MARGIN_SO_SO (stop-out level).
+  , accountInfoMarginInitial     :: !(Maybe Double)  -- ^ ACCOUNT_MARGIN_INITIAL.
+  , accountInfoMarginMaintenance :: !(Maybe Double)  -- ^ ACCOUNT_MARGIN_MAINTENANCE.
+  , accountInfoCompany           :: !(Maybe Text)    -- ^ ACCOUNT_COMPANY.
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON AccountInfoResponse where
@@ -271,6 +332,17 @@ instance FromJSON AccountInfoResponse where
       <*> o .: "server"
       <*> o .: "trade_allowed"
       <*> o .: "trade_expert"
+      <*> o .:? "trade_mode"
+      <*> o .:? "margin_mode"
+      <*> o .:? "currency_digits"
+      <*> o .:? "limit_orders"
+      <*> o .:? "fifo_close"
+      <*> o .:? "credit"
+      <*> o .:? "margin_so_call"
+      <*> o .:? "margin_so_so"
+      <*> o .:? "margin_initial"
+      <*> o .:? "margin_maintenance"
+      <*> o .:? "company"
 
 
 -- | Single position info from positions_get
@@ -288,6 +360,11 @@ data PositionInfoResponse = PositionInfoResponse
   , positionSwap         :: !Double
   , positionMagic        :: !Int
   , positionComment      :: !Text
+  , positionIdentifier   :: !(Maybe Integer)  -- ^ POSITION_IDENTIFIER, stable position id across partial fills.
+  , positionTime         :: !(Maybe Integer)  -- ^ POSITION_TIME (server seconds), open time.
+  , positionTimeUpdate   :: !(Maybe Integer)  -- ^ POSITION_TIME_UPDATE (server seconds), last SL/TP change.
+  , positionTimeMsc      :: !(Maybe Integer)  -- ^ POSITION_TIME_MSC (server milliseconds), open time.
+  , positionTimeUpdateMsc :: !(Maybe Integer) -- ^ POSITION_TIME_UPDATE_MSC (server milliseconds).
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON PositionInfoResponse where
@@ -305,6 +382,11 @@ instance FromJSON PositionInfoResponse where
       <*> o .: "swap"
       <*> o .: "magic"
       <*> o .:? "comment" .!= ""
+      <*> o .:? "identifier"
+      <*> o .:? "time"
+      <*> o .:? "time_update"
+      <*> o .:? "time_msc"
+      <*> o .:? "time_update_msc"
 
 
 -- | Response from positions_get action
@@ -334,6 +416,11 @@ data OrderInfoResponse = OrderInfoResponse
   , orderTp           :: !Double
   , orderMagic        :: !Int
   , orderComment      :: !Text
+  , orderState          :: !(Maybe Int)      -- ^ ORDER_STATE (started/placed/filled/...).
+  , orderTimeSetup      :: !(Maybe Integer)  -- ^ ORDER_TIME_SETUP (server seconds).
+  , orderTimeExpiration :: !(Maybe Integer)  -- ^ ORDER_TIME_EXPIRATION (server seconds, 0 = GTC).
+  , orderTypeTime       :: !(Maybe Int)      -- ^ ORDER_TYPE_TIME (GTC/day/specified/...).
+  , orderTypeFilling    :: !(Maybe Int)      -- ^ ORDER_TYPE_FILLING (FOK/IOC/RETURN).
   } deriving (Show, Eq, Generic, NFData)
 
 instance FromJSON OrderInfoResponse where
@@ -342,13 +429,24 @@ instance FromJSON OrderInfoResponse where
       <$> o .: "ticket"
       <*> o .: "symbol"
       <*> o .: "type"
-      <*> o .: "volume"
+      -- The MQL5 file-bridge EA reports pending-order volume as
+      -- @volume_current@\/@volume_initial@ (no @volume@ key); the Python bridge
+      -- uses @volume@.  Accept all three so 'orders_get' parses on both channels.
+      <*> (o .: "volume" <|> o .: "volume_current" <|> o .: "volume_initial")
       <*> o .: "price_open"
-      <*> o .: "price_current"
+      -- The file-bridge EA omits @price_current@ for pending orders; default to
+      -- the open price rather than failing the whole parse.
+      <*> (o .:? "price_current" .!= 0 >>= \pc ->
+             if pc /= 0 then pure pc else o .: "price_open")
       <*> o .: "sl"
       <*> o .: "tp"
       <*> o .: "magic"
       <*> o .:? "comment" .!= ""
+      <*> o .:? "state"
+      <*> o .:? "time_setup"
+      <*> o .:? "time_expiration"
+      <*> o .:? "type_time"
+      <*> o .:? "type_filling"
 
 
 -- | Response from orders_get action

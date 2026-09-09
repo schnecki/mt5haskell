@@ -348,6 +348,11 @@ string HandlePositionsGet()
          position["commission"] = positionInfo.Commission();
          position["magic"] = (long)positionInfo.Magic();
          position["comment"] = positionInfo.Comment();
+         position["identifier"] = (long)positionInfo.Identifier();
+         position["time"] = (long)positionInfo.Time();
+         position["time_update"] = (long)positionInfo.TimeUpdate();
+         position["time_msc"] = (long)positionInfo.TimeMsc();
+         position["time_update_msc"] = (long)positionInfo.TimeUpdateMsc();
 
          response["positions"].Add(position);
       }
@@ -386,6 +391,10 @@ string HandleOrdersGet()
          order["magic"] = (long)orderInfo.Magic();
          order["comment"] = orderInfo.Comment();
          order["state"] = (int)orderInfo.State();
+         order["time_setup"] = (long)orderInfo.TimeSetup();
+         order["time_expiration"] = (long)orderInfo.TimeExpiration();
+         order["type_time"] = (int)orderInfo.TypeTime();
+         order["type_filling"] = (int)orderInfo.TypeFilling();
 
          response["orders"].Add(order);
       }
@@ -418,6 +427,21 @@ string HandleAccountInfo()
    response["leverage"] = (long)AccountInfoInteger(ACCOUNT_LEVERAGE);
    response["trade_allowed"] = (bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED);
    response["trade_expert"] = (bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
+
+   //--- Account mode / limits (integer enums)
+   response["trade_mode"]      = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   response["margin_mode"]     = (int)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   response["currency_digits"] = (int)AccountInfoInteger(ACCOUNT_CURRENCY_DIGITS);
+   response["limit_orders"]    = (int)AccountInfoInteger(ACCOUNT_LIMIT_ORDERS);
+   response["fifo_close"]      = (bool)AccountInfoInteger(ACCOUNT_FIFO_CLOSE);
+
+   //--- Account economics (doubles)
+   response["credit"]             = AccountInfoDouble(ACCOUNT_CREDIT);
+   response["margin_so_call"]     = AccountInfoDouble(ACCOUNT_MARGIN_SO_CALL);
+   response["margin_so_so"]       = AccountInfoDouble(ACCOUNT_MARGIN_SO_SO);
+   response["margin_initial"]     = AccountInfoDouble(ACCOUNT_MARGIN_INITIAL);
+   response["margin_maintenance"] = AccountInfoDouble(ACCOUNT_MARGIN_MAINTENANCE);
+   response["company"]            = AccountInfoString(ACCOUNT_COMPANY);
 
    return response.Serialize();
 }
@@ -594,6 +618,36 @@ string HandleSymbolInfo(CJAVal &data)
    result["spread"] = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
    result["point"] = SymbolInfoDouble(symbol, SYMBOL_POINT);
    result["trade_contract_size"] = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   result["volume_min"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   result["volume_max"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   result["volume_step"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   result["volume_limit"] = SymbolInfoDouble(symbol, SYMBOL_VOLUME_LIMIT);
+
+   //--- Trade calculation / execution metadata (integer enums)
+   result["trade_calc_mode"]    = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_CALC_MODE);
+   result["trade_mode"]         = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE);
+   result["trade_exemode"]      = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_EXEMODE);
+   result["trade_stops_level"]  = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   result["trade_freeze_level"] = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   result["filling_mode"]       = (int)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   result["expiration_mode"]    = (int)SymbolInfoInteger(symbol, SYMBOL_EXPIRATION_MODE);
+
+   //--- Tick / margin / swap economics (doubles)
+   result["tick_value"]         = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+   result["tick_value_profit"]  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   result["tick_value_loss"]    = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   result["tick_size"]          = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   result["margin_initial"]     = SymbolInfoDouble(symbol, SYMBOL_MARGIN_INITIAL);
+   result["margin_maintenance"] = SymbolInfoDouble(symbol, SYMBOL_MARGIN_MAINTENANCE);
+   result["swap_long"]          = SymbolInfoDouble(symbol, SYMBOL_SWAP_LONG);
+   result["swap_short"]         = SymbolInfoDouble(symbol, SYMBOL_SWAP_SHORT);
+
+   //--- Descriptive strings
+   result["currency_base"]      = SymbolInfoString(symbol, SYMBOL_CURRENCY_BASE);
+   result["currency_profit"]    = SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT);
+   result["currency_margin"]    = SymbolInfoString(symbol, SYMBOL_CURRENCY_MARGIN);
+   result["description"]        = SymbolInfoString(symbol, SYMBOL_DESCRIPTION);
+   result["path"]               = SymbolInfoString(symbol, SYMBOL_PATH);
    
    if(EnableLogging)
       Print("Symbol info retrieved: ", symbol, " Bid=", tick.bid, " Ask=", tick.ask);
