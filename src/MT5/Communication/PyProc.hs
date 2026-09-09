@@ -26,6 +26,7 @@ import           System.Environment         (lookupEnv)
 import           System.IO
 import           System.IO.Error            (isEOFError,
                                              isIllegalOperation,
+                                             isInvalidArgumentError,
                                              isResourceVanishedError)
 import           System.IO.Unsafe           (unsafePerformIO)
 import           Text.Read                  (readMaybe)
@@ -378,6 +379,7 @@ withMT5Lock action = withMVar pyProcLock $ \_ -> withCrossProcLock $ do
       -- here the cycle rethrows, upstream retries the *same* dead handle, and
       -- the process loops until the watchdog kills it.
       if isResourceVanishedError e || isEOFError e || isIllegalOperation (e :: IOException)
+           || isInvalidArgumentError e  -- EBADF: handle fd closed/recycled by OS
         then return (Left ())
         else throwIO e
 
