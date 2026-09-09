@@ -24,10 +24,11 @@ import           Data.Maybe                 (fromMaybe, isJust)
 import           GHC.Clock                  (getMonotonicTimeNSec)
 import           System.Environment         (lookupEnv)
 import           System.IO
+import           GHC.IO.Exception           (IOErrorType (..))
 import           System.IO.Error            (isEOFError,
                                              isIllegalOperation,
-                                             isInvalidArgumentError,
-                                             isResourceVanishedError)
+                                             isResourceVanishedError,
+                                             ioeGetErrorType)
 import           System.IO.Unsafe           (unsafePerformIO)
 import           Text.Read                  (readMaybe)
 import           System.Posix.IO            (handleToFd)
@@ -379,7 +380,7 @@ withMT5Lock action = withMVar pyProcLock $ \_ -> withCrossProcLock $ do
       -- here the cycle rethrows, upstream retries the *same* dead handle, and
       -- the process loops until the watchdog kills it.
       if isResourceVanishedError e || isEOFError e || isIllegalOperation (e :: IOException)
-           || isInvalidArgumentError e  -- EBADF: handle fd closed/recycled by OS
+           || ioeGetErrorType e == InvalidArgument  -- EBADF: handle fd closed/recycled by OS
         then return (Left ())
         else throwIO e
 
