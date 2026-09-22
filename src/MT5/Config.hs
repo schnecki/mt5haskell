@@ -34,7 +34,7 @@ import           System.IO.Unsafe    (unsafePerformIO)
 data CommunicationChannel
   = PythonBridge                      -- ^ Use Python bridge (original method)
   | FileBridge                        -- ^ Use file-based bridge (default Wine paths)
-  | FileBridgeCustom FilePath FilePath -- ^ Use file-based bridge with custom paths (request, response)
+  | FileBridgeCustom FilePath         -- ^ Use file-based bridge in a custom exchange directory
   deriving (Show, Eq, Generic, NFData)
 
 -- | Execution environment detection
@@ -112,14 +112,18 @@ withLocalMT5Linux path config = config { mt5linuxLocalPath = Just path }
 withExecutionMode :: ExecutionMode -> Config -> Config
 withExecutionMode mode config = config { preferredMode = Just mode }
 
--- | Use file-based communication (default Wine paths)
+-- | Use file-based communication in the default Wine exchange directory.
+--
+--   Each request is written as its own file and answered by a file carrying
+--   the same id, so concurrent callers cannot read one another's replies.
 withFileBridge :: Config -> Config
 withFileBridge config = config { communicationChannel = FileBridge }
 
--- | Use file-based communication with custom paths
-withFileBridgeCustom :: FilePath -> FilePath -> Config -> Config
-withFileBridgeCustom reqPath respPath config =
-  config { communicationChannel = FileBridgeCustom reqPath respPath }
+-- | Use file-based communication in a custom exchange directory. The EA must
+--   be pointed at the same directory.
+withFileBridgeCustom :: FilePath -> Config -> Config
+withFileBridgeCustom dir config =
+  config { communicationChannel = FileBridgeCustom dir }
 
 -- | Use Python bridge communication
 withPythonBridge :: Config -> Config

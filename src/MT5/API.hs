@@ -88,7 +88,8 @@ import           System.Timeout              (timeout)
 
 
 import           MT5.API.Internal            (sendRequestViaFile)
-import           MT5.Communication.File      (getMT5FilesDirDefault,
+import           MT5.Communication.File      (getMT5FilesDirCustom,
+                                              getMT5FilesDirDefault,
                                               resetMT5Files)
 import           MT5.Communication           (receive, reconnectDaemon, send,
                                               unpickle', withMT5Lock)
@@ -408,21 +409,20 @@ initialize = do
         Nothing  -> return $ Left "MT5 server time zone not configured: set MT5.Config.serverTimeZone (e.g. withServerTimeZone Europe__Madrid). Refusing to trade without a zone, as candle timestamps cannot be converted to UTC."
         Just lbl -> Right () <$ setServerTZ (tzByLabel lbl)
 
--- | Reset the file bridge by writing empty JSON to both request and response files.
+-- | Delete request and response files left behind in the exchange directory.
 --
--- Clears stale modification timestamps so the next request is not blocked waiting
--- for an outdated response.  Call this when repeated file-bridge requests fail
--- (e.g. all cancel attempts return Left False) to restore a clean communication
--- state before retrying.  Resolves file paths from the current global Config.
+-- A completed request removes its own files, so leftovers belong to calls that
+-- died or to a terminal restarted mid-exchange, and would otherwise be
+-- executed by the EA with nobody waiting for the answer. Call this at startup
+-- and when repeated file-bridge requests fail (e.g. all cancel attempts return
+-- Left False) before retrying. Resolves the directory from the global Config.
 resetFileBridge :: IO ()
 resetFileBridge = do
   config <- getConfig
-  (reqPath, respPath) <- case communicationChannel config of
-    FileBridgeCustom r s -> return (r, s)
-    _ -> do
-      filesDir <- getMT5FilesDirDefault
-      return (filesDir ++ "/mt5_api_request.json", filesDir ++ "/mt5_api_response.json")
-  resetMT5Files reqPath respPath
+  filesDir <- case communicationChannel config of
+    FileBridgeCustom dir -> getMT5FilesDirCustom dir
+    _                    -> getMT5FilesDirDefault
+  resetMT5Files filesDir
 
 -- | Log in to a MetaTrader 5 account.
 --
@@ -477,7 +477,7 @@ accountInfo = do
   config <- liftIO getConfig
   case communicationChannel config of
     FileBridge           -> accountInfoViaFile
-    FileBridgeCustom _ _ -> accountInfoViaFile
+    FileBridgeCustom _ -> accountInfoViaFile
     PythonBridge         -> accountInfoViaPython
 
 -- | Get account info via file-based communication
@@ -632,7 +632,7 @@ positionsGet = do
   config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionsGetViaFile Nothing
-    FileBridgeCustom _ _ -> positionsGetViaFile Nothing
+    FileBridgeCustom _ -> positionsGetViaFile Nothing
     PythonBridge         -> positionsGetViaPython
 
 -- | Get positions via file-based communication
@@ -750,7 +750,7 @@ positionClose ticket = do
   config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionCloseViaFile ticket
-    FileBridgeCustom _ _ -> positionCloseViaFile ticket
+    FileBridgeCustom _ -> positionCloseViaFile ticket
     PythonBridge         -> positionCloseViaPython ticket
 
 -- | Close a position via file-based communication
@@ -836,7 +836,7 @@ positionClosePartial ticket volume = do
   config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionClosePartialViaFile ticket volume
-    FileBridgeCustom _ _ -> positionClosePartialViaFile ticket volume
+    FileBridgeCustom _ -> positionClosePartialViaFile ticket volume
     PythonBridge         -> positionClosePartialViaPython ticket volume
 
 -- | Close position partially via file-based communication
@@ -889,7 +889,7 @@ positionModify ticket sl tp = do
   config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> positionModifyViaFile ticket sl tp
-    FileBridgeCustom _ _ -> positionModifyViaFile ticket sl tp
+    FileBridgeCustom _ -> positionModifyViaFile ticket sl tp
     PythonBridge         -> positionModifyViaPython ticket sl tp
 
 -- | Modify position via file-based communication
@@ -1034,7 +1034,7 @@ ordersGet mInstr mTicket = do
   config <- liftIO getConfig
   case communicationChannel config of
     FileBridge           -> ordersGetViaFile mInstr mTicket
-    FileBridgeCustom _ _ -> ordersGetViaFile mInstr mTicket
+    FileBridgeCustom _ -> ordersGetViaFile mInstr mTicket
     PythonBridge         -> ordersGetViaPython mInstr mTicket
 
 -- | Retrieve orders using file bridge (Note: ticket filter not supported by EA)
@@ -1179,7 +1179,7 @@ symbolInfo symbol = do
   config <- liftIO getConfig
   case communicationChannel config of
     FileBridge           -> symbolInfoViaFile symbol
-    FileBridgeCustom _ _ -> symbolInfoViaFile symbol
+    FileBridgeCustom _ -> symbolInfoViaFile symbol
     PythonBridge         -> symbolInfoViaPython symbol
 
 -- | Retrieve symbol information using file bridge
@@ -1463,7 +1463,7 @@ orderCheck request = do
   config <- getConfig
   case positionManagementChannel config of
     FileBridge           -> orderCheckViaFile request
-    FileBridgeCustom _ _ -> orderCheckViaFile request
+    FileBridgeCustom _ -> orderCheckViaFile request
     PythonBridge         -> orderCheckViaPython request
 
 -- | Check order using file bridge
@@ -1597,7 +1597,7 @@ orderSend request = do
   config <- liftIO getConfig
   case positionManagementChannel config of
     FileBridge           -> orderSendViaFile request
-    FileBridgeCustom _ _ -> orderSendViaFile request
+    FileBridgeCustom _ -> orderSendViaFile request
     PythonBridge         -> orderSendViaPython request
 
 -- | Send order using file bridge (broker restriction: MUST use EA)
@@ -1786,7 +1786,7 @@ cancelOrderPOST orderTicket = do
   config <- getConfig
   case positionManagementChannel config of
     FileBridge           -> cancelOrderViaFile orderTicket
-    FileBridgeCustom _ _ -> cancelOrderViaFile orderTicket
+    FileBridgeCustom _ -> cancelOrderViaFile orderTicket
     PythonBridge         -> cancelOrderViaPython orderTicket
 
 -- | Cancel pending order via file bridge using the dedicated order_cancel EA action.
@@ -1841,7 +1841,7 @@ cancelAllOrdersPOST = do
     Right orders ->
       case positionManagementChannel config of
         FileBridge           -> mapM cancelTradeOrderViaFile orders
-        FileBridgeCustom _ _ -> mapM cancelTradeOrderViaFile orders
+        FileBridgeCustom _ -> mapM cancelTradeOrderViaFile orders
         PythonBridge         -> mapM (cancelOrderViaPython . tradeOrderTicket) orders
 
 -- | Cancel a pending order via FileBridge using its full TradeOrder record (avoids a second orders_get lookup).

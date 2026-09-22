@@ -19,7 +19,8 @@ import qualified Data.ByteString.Lazy as BSL
 import           Data.Text            (Text)
 import qualified Data.Text            as T
 
-import           MT5.Communication.File  (getMT5FilesDirDefault, sendRequestAndReceive, initializeFiles)
+import           MT5.Communication.File  (getMT5FilesDirCustom, getMT5FilesDirDefault,
+                                          sendRequestAndReceivePerRequest)
 import           MT5.Communication.Types (Request(..), Response(..))
 import           MT5.Config              (Config(..), CommunicationChannel(..), getConfig)
 
@@ -51,56 +52,18 @@ sendRequestViaFile action requestData timeoutMs = do
   -- don't error on PythonBridge because the caller has explicitly chosen FileBridge
   -- routing via positionManagementChannel.
   
-  case communicationChannel config of
-    FileBridge -> do
-      -- Get default MT5 files directory
-      filesDir <- getMT5FilesDirDefault
-      let reqPath = filesDir ++ "/mt5_api_request.json"
-      let respPath = filesDir ++ "/mt5_api_response.json"
-      
-      -- Initialize files (creates them if they don't exist)
-      initializeFiles reqPath respPath
-      
-      -- Create request
-      let request = Request
-            { requestAction = action
-            , requestData = toJSON requestData
-            }
-      
-      -- Send request and wait for response (atomically with lock)
-      sendRequestAndReceive reqPath respPath request timeoutMs
-      
-    FileBridgeCustom reqPath respPath -> do
-      -- Initialize custom file paths
-      initializeFiles reqPath respPath
-      
-      -- Create request
-      let request = Request
-            { requestAction = action
-            , requestData = toJSON requestData
-            }
-      
-      -- Send request and wait for response (atomically with lock)
-      sendRequestAndReceive reqPath respPath request timeoutMs
-      
-    PythonBridge -> do
-      -- Fall back to default file paths when communicationChannel is PythonBridge
-      -- but positionManagementChannel has routed us here (e.g., orderSend, orderCheck)
-      filesDir <- getMT5FilesDirDefault
-      let reqPath = filesDir ++ "/mt5_api_request.json"
-      let respPath = filesDir ++ "/mt5_api_response.json"
-      
-      -- Initialize files (creates them if they don't exist)
-      initializeFiles reqPath respPath
-      
-      -- Create request
-      let request = Request
-            { requestAction = action
-            , requestData = toJSON requestData
-            }
-      
-      -- Send request and wait for response (atomically with lock)
-      sendRequestAndReceive reqPath respPath request timeoutMs
+  filesDir <-
+    case communicationChannel config of
+      FileBridgeCustom dir -> getMT5FilesDirCustom dir
+      -- PythonBridge lands here when positionManagementChannel has routed a
+      -- file-bridge action (e.g. orderSend) past it; the default exchange
+      -- directory is the right one in that case too.
+      _                    -> getMT5FilesDirDefault
+  let request = Request
+        { requestAction = action
+        , requestData = toJSON requestData
+        }
+  sendRequestAndReceivePerRequest filesDir request timeoutMs
 
 -- | Check if a communication channel supports a given request action.
 --
@@ -121,7 +84,7 @@ channelSupportsRequest channel action =
     
     FileBridge -> action `elem` supportedFileBridgeActions
     
-    FileBridgeCustom _ _ -> action `elem` supportedFileBridgeActions
+    FileBridgeCustom _ -> action `elem` supportedFileBridgeActions
   where
     -- Actions supported by the MT5RestAPIBridge.mq5 EA
     supportedFileBridgeActions =

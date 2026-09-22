@@ -17,8 +17,13 @@
 #include <Files\FileTxt.mqh>
 
 //--- Configuration
-input string RequestFile = "mt5_api_request.json";   // Request file name
-input string ResponseFile = "mt5_api_response.json"; // Response file name
+//--- One file per request: the client writes mt5_api_req_<id>.json and this EA
+//--- answers in mt5_api_resp_<id>.json, carrying the same id across. The id ties
+//--- a reply to the request that asked for it, so several clients can talk to
+//--- this terminal at once without ever reading one another's payloads.
+input string RequestPrefix = "mt5_api_req_";         // Request file name prefix
+input string ResponsePrefix = "mt5_api_resp_";       // Response file name prefix
+input int MaxRequestsPerPass = 20;                   // Max requests handled per timer/tick pass
 input int CheckIntervalInSecs = 1;                   // Check interval in seconds (minimum 1)
 input bool EnableLogging = true;                     // Enable detailed logging
 
@@ -54,8 +59,8 @@ int OnInit()
 
    Print("MT5 REST API Bridge started successfully");
    Print("Checking for requests every ", timerSeconds, " second(s)");
-   Print("Waiting for requests in: ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", RequestFile);
-   Print("Responses will be written to: ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", ResponseFile);
+   Print("Waiting for requests matching: ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", RequestPrefix, "*.json");
+   Print("Responses will be written as: ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", ResponsePrefix, "<id>.json");
 
    return(INIT_SUCCEEDED);
 }
@@ -94,11 +99,49 @@ void OnTick()
 //+------------------------------------------------------------------+
 void ProcessFileRequests()
 {
-   //--- Check if request file exists and has been modified
-   if(!requestFileHandle.Open(RequestFile, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON))
+   //--- Collect pending request file names first, then handle them. The search
+   //--- handle is closed before any request runs, because handling a request can
+   //--- itself create files in this directory and invalidate an open search.
+   string pending[];
+   int found = 0;
+   string fileName;
+   long searchHandle = FileFindFirst(RequestPrefix + "*.json", fileName, FILE_COMMON);
+
+   if(searchHandle != INVALID_HANDLE)
+   {
+      do
+      {
+         //--- Skip the client's temporary file: it is still being written and
+         //--- gets renamed into place once complete.
+         if(StringFind(fileName, ".tmp") >= 0)
+            continue;
+
+         ArrayResize(pending, found + 1);
+         pending[found] = fileName;
+         found++;
+      }
+      while(found < MaxRequestsPerPass && FileFindNext(searchHandle, fileName));
+
+      FileFindClose(searchHandle);
+   }
+
+   for(int i = 0; i < found; i++)
+      ProcessSingleRequest(pending[i]);
+}
+
+//+------------------------------------------------------------------+
+//| Handle one request file and write its matching response           |
+//+------------------------------------------------------------------+
+void ProcessSingleRequest(string requestFileName)
+{
+   //--- Derive the response name by swapping the prefix, so the reply carries
+   //--- the same id as the request it answers.
+   string requestId = StringSubstr(requestFileName, StringLen(RequestPrefix));
+   string responseFileName = ResponsePrefix + requestId;
+
+   if(!requestFileHandle.Open(requestFileName, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON))
       return;
 
-   //--- Read request content
    string requestContent = "";
    while(!requestFileHandle.IsEnding())
    {
@@ -106,20 +149,19 @@ void ProcessFileRequests()
    }
    requestFileHandle.Close();
 
+   //--- Take the request off the queue before running it. A request that
+   //--- crashes the handler must not be retried forever on every pass.
+   FileDelete(requestFileName, FILE_COMMON);
+
    if(StringLen(requestContent) == 0)
       return;
 
    if(EnableLogging)
-      Print("Processing request: ", StringSubstr(requestContent, 0, 500));
+      Print("Processing ", requestFileName, ": ", StringSubstr(requestContent, 0, 500));
 
-   //--- Parse and handle request
    string response = HandleRequest(requestContent);
 
-   //--- Write response
-   WriteResponse(response);
-
-   //--- Clear request file
-   ClearRequestFile();
+   WriteResponse(responseFileName, response);
 }
 
 //+------------------------------------------------------------------+
@@ -858,30 +900,33 @@ string CreateErrorResponse(int code, string message)
 //+------------------------------------------------------------------+
 //| Write response to file                                             |
 //+------------------------------------------------------------------+
-void WriteResponse(string response)
+void WriteResponse(string responseFileName, string response)
 {
-   if(responseFileHandle.Open(ResponseFile, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON))
+   //--- Write under a temporary name and move it into place, so the client
+   //--- never reads a half-written reply: the final name appears only once the
+   //--- whole payload is on disk. This matters most for candle arrays, which
+   //--- are large enough to span several write buffers.
+   string tempFileName = responseFileName + ".tmp";
+
+   if(responseFileHandle.Open(tempFileName, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON))
    {
       responseFileHandle.WriteString(response);
       responseFileHandle.Close();
 
+      FileDelete(responseFileName, FILE_COMMON);
+      if(!FileMove(tempFileName, FILE_COMMON, responseFileName, FILE_COMMON))
+      {
+         Print("Failed to move response into place (", responseFileName, "): ", GetLastError());
+         FileDelete(tempFileName, FILE_COMMON);
+         return;
+      }
+
       if(EnableLogging)
-         Print("Response written: ", StringSubstr(response, 0, 500));
+         Print("Response written to ", responseFileName, ": ", StringSubstr(response, 0, 500));
    }
    else
    {
-      Print("Failed to write response file: ", GetLastError());
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Clear request file                                                 |
-//+------------------------------------------------------------------+
-void ClearRequestFile()
-{
-   if(requestFileHandle.Open(RequestFile, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON))
-   {
-      requestFileHandle.Close();
+      Print("Failed to write response file ", tempFileName, ": ", GetLastError());
    }
 }
 //+------------------------------------------------------------------+
