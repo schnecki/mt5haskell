@@ -64,8 +64,8 @@ import           Control.Monad.Except        (ExceptT, runExceptT, throwError)
 import           Control.Monad.IO.Class      (liftIO)
 import           Data.Aeson                  (FromJSON (..), Value, decode,
                                               encode, object, withObject,
-                                              (.=), (.:))
-import           Data.Aeson.Types            (parseMaybe)
+                                              (.!=), (.=), (.:), (.:?))
+import           Data.Aeson.Types            (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy        as BSL
 import           Data.List                   (filter, find, isPrefixOf)
 import           Data.Maybe                  (fromMaybe)
@@ -250,9 +250,30 @@ liftResponseOrTypedError respName response mResp
            Just (ErrorResponse code msg) ->
              throwError (classifyErrorResponse respName code msg)
            Nothing ->
-             -- success=false but no error_code/error_message; surface as InvalidResponse
-             -- rather than ParseError so retries still bail out fast.
-             throwError (InvalidResponse (respName <> ": success=false without error fields; raw=" <> raw))
+             -- Trade operations do not use the error_code/error_message shape: a
+             -- rejected order_send answers with the MqlTradeResult fields, where
+             -- the reason sits in @retcode@ and its text in @comment@. Classify
+             -- that the same way, so an ordinary broker rejection (e.g. 10015
+             -- invalid price) becomes a typed BrokerError that callers can judge
+             -- instead of an opaque InvalidResponse that stops a retry loop dead.
+             case parseMaybe parseTradeResultError (responseData response) of
+               Just (code, msg) -> throwError (classifyErrorResponse respName code msg)
+               Nothing ->
+                 throwError (InvalidResponse (respName <> ": success=false without error fields; raw=" <> raw))
+
+-- | Read the failure reason out of an @MqlTradeResult@ body, as returned by the
+--   trade actions (@order_send@, @order_cancel@, @position_close@ and friends).
+--   Those answer with @retcode@ and @comment@ rather than the
+--   @error_code@\/@error_message@ pair the non-trade actions use.
+parseTradeResultError :: Value -> Parser (Int, Text)
+parseTradeResultError = withObject "MqlTradeResult" $ \o -> do
+  code <- o .: "retcode"
+  -- MQL5 leaves the comment empty on some rejections; the retcode still carries
+  -- the reason, so fall back to a description rather than failing the parse.
+  msg <- o .:? "comment" .!= ""
+  let msg' = if T.null (T.strip msg) then "broker rejected the request" else msg
+  return (code, msg')
+
 
 -- | Map an MT5 EA @error_code@ to the most specific 'MT5Error' constructor.
 -- Falls back to 'BrokerError' with the parsed 'TradeRetcode' (which may be
@@ -1272,7 +1293,10 @@ convertSymbolInfoResponse resp =
   , symInfoTradeTickValue          = fromMaybe 0.0 (symbolInfoTickValue resp)
   , symInfoTradeTickValueProfit    = fromMaybe 0.0 (symbolInfoTickValueProfit resp)
   , symInfoTradeTickValueLoss      = fromMaybe 0.0 (symbolInfoTickValueLoss resp)
-  , symInfoTradeTickSize           = fromMaybe 0.01 (symbolInfoTickSize resp)
+    -- A missing tick size stays zero rather than becoming a plausible-looking
+    -- 0.01, so that callers can tell "the broker did not report one" apart from
+    -- "the broker reported a one-cent tick" and derive their own fallback.
+  , symInfoTradeTickSize           = fromMaybe 0.0 (symbolInfoTickSize resp)
   , symInfoTradeContractSize       = fromMaybe 100000.0 (symbolInfoContractSize resp)
   , symInfoTradeAccruedInterest    = 0.0
   , symInfoTradeFaceValue          = 0.0
