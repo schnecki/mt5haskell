@@ -40,6 +40,7 @@ module MT5.API
   , copyTicksFrom
   , copyTicksRange
   , historyDealsRealizedForPosition
+  , historyDealsForPosition
     -- * ExceptT Helper Functions
   , liftMaybe
   , eitherToExceptT
@@ -2279,11 +2280,23 @@ parseTickDataFromFields = do
 -- floating profit which excludes commission/swap and reflects the mid/opposite
 -- quote at snapshot time rather than the actual fill.
 --
--- Returns @Left@ with a message when the bridge reports an error, and
--- @Right 0.0@ when the position has no deals in loaded history.
+-- Returns @Left@ with a message when the bridge reports an error, e.g. when
+-- the terminal has no deal history to answer from, and @Right 0.0@ when the
+-- position has no deals.
 historyDealsRealizedForPosition :: Integer  -- ^ MT5 position ticket
                                 -> IO (Either String Double)
-historyDealsRealizedForPosition positionId = withMT5Lock $ do
+historyDealsRealizedForPosition positionId = fmap snd <$> historyDealsForPosition positionId
+
+-- | The number of deals of a position and their net result, summed as
+-- @profit + swap + commission + fee@.
+--
+-- Wraps MT5's @history_deals_get(position=ticket)@.  The count tells a
+-- position without deals from one whose deals sum to exactly zero.  Returns
+-- @Left@ with a message when the bridge reports an error, e.g. when the
+-- terminal has no deal history to answer from.
+historyDealsForPosition :: Integer  -- ^ MT5 position ticket
+                        -> IO (Either String (Int, Double))
+historyDealsForPosition positionId = withMT5Lock $ do
   outcome <- try $ do
     send "HISTORY_DEALS_GET_POSITION"
     send (show positionId)
@@ -2299,7 +2312,7 @@ historyDealsRealizedForPosition positionId = withMT5Lock $ do
           fee        <- unpickle' "Double" <$> receive
           (_entry :: Int) <- unpickle' "Int" <$> receive
           return (profit + swap + commission + fee)
-        return $ Right (sum vals)
+        return $ Right (n, sum vals)
   case outcome of
     Left (e :: SomeException) -> do
       -- An in-cycle exception (e.g. a pickle parse failure) means the reply was
