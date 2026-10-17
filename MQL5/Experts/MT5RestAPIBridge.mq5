@@ -23,7 +23,8 @@
 //--- this terminal at once without ever reading one another's payloads.
 input string RequestPrefix = "mt5_api_req_";         // Request file name prefix
 input string ResponsePrefix = "mt5_api_resp_";       // Response file name prefix
-input int MaxRequestsPerPass = 20;                   // Max requests handled per timer/tick pass
+input string HeartbeatFileName = "mt5_api_heartbeat.txt"; // Liveness file rewritten every timer pass
+input int MaxRequestsPerPass = 20;                  // Max requests handled per timer/tick pass
 input int CheckIntervalInSecs = 1;                   // Check interval in seconds (minimum 1)
 input bool EnableLogging = true;                     // Enable detailed logging
 
@@ -31,7 +32,6 @@ input bool EnableLogging = true;                     // Enable detailed logging
 CTrade trade;
 CPositionInfo positionInfo;
 COrderInfo orderInfo;
-CFileTxt requestFileHandle;
 CFileTxt responseFileHandle;
 datetime lastProcessedTime = 0;
 
@@ -81,8 +81,23 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   WriteHeartbeat();
    //--- Process any pending file requests
    ProcessFileRequests();
+}
+
+//+------------------------------------------------------------------+
+//| Record that the request loop is alive                              |
+//+------------------------------------------------------------------+
+//--- The file's modification time is the liveness signal: clients and the
+//--- watchdog treat a heartbeat older than a few seconds as a frozen EA.
+void WriteHeartbeat()
+{
+   int h = FileOpen(HeartbeatFileName, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+   if(h == INVALID_HANDLE)
+      return;
+   FileWriteString(h, TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS));
+   FileClose(h);
 }
 
 //+------------------------------------------------------------------+
@@ -139,15 +154,19 @@ void ProcessSingleRequest(string requestFileName)
    string requestId = StringSubstr(requestFileName, StringLen(RequestPrefix));
    string responseFileName = ResponsePrefix + requestId;
 
-   if(!requestFileHandle.Open(requestFileName, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON))
+   //--- Read the whole request in one bounded call. The client deletes its
+   //--- request file when it gives up waiting; a line-by-line loop that waits
+   //--- for end-of-file can then spin forever on a vanished file and freeze
+   //--- this single-threaded EA for every client.
+   int requestHandle = FileOpen(requestFileName, FILE_READ|FILE_BIN|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(requestHandle == INVALID_HANDLE)
       return;
 
+   ulong requestSize = FileSize(requestHandle);
    string requestContent = "";
-   while(!requestFileHandle.IsEnding())
-   {
-      requestContent += requestFileHandle.ReadString();
-   }
-   requestFileHandle.Close();
+   if(requestSize > 0 && requestSize < 16777216)
+      requestContent = FileReadString(requestHandle, (int)requestSize);
+   FileClose(requestHandle);
 
    //--- Take the request off the queue before running it. A request that
    //--- crashes the handler must not be retried forever on every pass.

@@ -17,24 +17,31 @@ module MT5.Communication.File
     , responseFilePrefix
     ) where
 
-import           Control.Concurrent     (threadDelay)
-import           Control.Exception      (IOException, catch, finally)
-import           Control.Monad          (unless)
+import           Control.Concurrent     (forkIO, threadDelay)
+import           Control.Exception      (IOException, SomeException, bracket, catch, finally)
+import           Control.Monad          (forM_, unless, void, when)
 import qualified Data.Aeson             as Aeson
 import qualified Data.ByteString.Lazy   as BSL
 import           Data.IORef             (IORef, atomicModifyIORef', newIORef)
 import           Data.List              (isPrefixOf)
 import           Data.Maybe             (fromMaybe)
-import           Data.Time.Clock        (getCurrentTime)
+import           Data.Time.Clock        (NominalDiffTime, diffUTCTime, getCurrentTime)
 import           Data.Time.Clock.POSIX  (utcTimeToPOSIXSeconds)
 import           EasyLogger
-import           System.Directory       (doesFileExist, getHomeDirectory, listDirectory,
-                                          removeFile, renameFile)
+import           System.Directory       (doesFileExist, findExecutable, getHomeDirectory,
+                                          getModificationTime, listDirectory, removeFile,
+                                          renameFile)
 import           System.Environment     (lookupEnv)
+import           System.Exit            (ExitCode (..))
 import           System.FilePath        ((<.>), (</>))
+import           System.IO              (SeekMode (..))
 import           System.IO.Error        (catchIOError, isDoesNotExistError)
 import           System.IO.Unsafe       (unsafePerformIO)
+import           System.Posix.IO        (LockRequest (..), OpenFileFlags (..), OpenMode (..),
+                                          closeFd, defaultFileFlags, openFd, setLock)
 import           System.Posix.Process   (getProcessID)
+import           System.Process         (CreateProcess (..), StdStream (..), createProcess,
+                                          proc, readProcessWithExitCode, waitForProcess)
 import           System.Timeout         (timeout)
 
 import           MT5.Communication.Types
@@ -133,6 +140,7 @@ sendRequestAndReceivePerRequest baseDir req timeoutMs = do
       removeFileIfExists reqPath
       removeFileIfExists respPath
       $(logError) $ "Per-request timeout after " ++ show timeoutMs ++ "ms (" ++ reqName ++ ")"
+      recoverFrozenEA baseDir
       return Nothing
 
 
@@ -154,6 +162,128 @@ waitForPerRequestResponse respPath = poll
             -- An unparsable read here is almost always a partially written
             -- file caught mid-write; retry rather than fail the request.
             Nothing -> threadDelay 20000 >> poll
+
+
+-- | Name of the liveness file the EA rewrites on every timer pass.
+eaHeartbeatFileName :: FilePath
+eaHeartbeatFileName = "mt5_api_heartbeat.txt"
+
+
+-- | Heartbeat age, in seconds, beyond which the EA counts as frozen. The EA
+--   beats every second; a long candle request can delay a beat by seconds.
+eaMaxHeartbeatAgeSecs :: NominalDiffTime
+eaMaxHeartbeatAgeSecs = 120
+
+
+-- | Minimum time, in seconds, between two terminal restarts across all
+--   processes, so a terminal that cannot recover is not restarted in a loop.
+eaRestartCooldownSecs :: NominalDiffTime
+eaRestartCooldownSecs = 900
+
+
+-- | Restart the MT5 terminal when the bridge EA has stopped beating.
+--
+--   The EA serves every file-bridge request from one thread inside the
+--   terminal. When that thread freezes the terminal stays up, every request
+--   times out, and nothing on the client side can revive it. Called after a
+--   request timed out: if the heartbeat file is older than
+--   'eaMaxHeartbeatAgeSecs', exactly one of the processes sharing the bridge
+--   (an exclusive POSIX lock on @mt5_api_recovery.lock@) kills
+--   @terminal64.exe@ and starts it again; the terminal restores its charts with
+--   their attached EAs. A stamp file enforces 'eaRestartCooldownSecs' between
+--   restarts. Without a heartbeat file (an EA that does not beat) nothing is
+--   done. Setting @MT5_EA_RECOVERY=0@ disables the restart. Never throws.
+recoverFrozenEA :: FilePath -> IO ()
+recoverFrozenEA baseDir = do
+  enabled <- (/= Just "0") <$> lookupEnv "MT5_EA_RECOVERY"
+  age <- fileAge (baseDir </> eaHeartbeatFileName)
+  case age of
+    Just secs | enabled && secs > eaMaxHeartbeatAgeSecs ->
+      withRecoveryLock baseDir (restartIfCooledDown secs)
+        `catch` \(e :: SomeException) ->
+          $(logError) $ "MT5 EA recovery failed: " ++ show e
+    _ -> return ()
+  where
+    stampPath = baseDir </> "mt5_api_recovery.stamp"
+    restartIfCooledDown hbAge = do
+      sinceLast <- fileAge stampPath
+      case sinceLast of
+        Just secs | secs < eaRestartCooldownSecs ->
+          $(logInfo) $ "MT5 EA heartbeat stale (" ++ show hbAge ++ ") but terminal was restarted "
+            ++ show secs ++ " ago; waiting"
+        _ -> do
+          writeFile stampPath ""
+          $(logError) $ "MT5 EA heartbeat stale (" ++ show hbAge ++ "); restarting MT5 terminal"
+          restartTerminal baseDir
+
+
+-- | Seconds since a file was last modified, or 'Nothing' if it is missing.
+fileAge :: FilePath -> IO (Maybe NominalDiffTime)
+fileAge path = do
+  mtime <- (Just <$> getModificationTime path) `catch` \(_ :: IOException) -> return Nothing
+  now <- getCurrentTime
+  return (diffUTCTime now <$> mtime)
+
+
+-- | Run an action while holding the cross-process recovery lock. Skips the
+--   action when another process holds it, since that process is already
+--   recovering the terminal.
+withRecoveryLock :: FilePath -> IO () -> IO ()
+withRecoveryLock baseDir act =
+  bracket (openFd (baseDir </> "mt5_api_recovery.lock") ReadWrite defaultFileFlags { creat = Just 0o600 })
+          closeFd $ \fd -> do
+    acquired <- (setLock fd (WriteLock, AbsoluteSeek, 0, 0) >> return True)
+                  `catch` \(_ :: IOException) -> return False
+    if acquired then act else $(logInfo) ("MT5 EA recovery already running in another process" :: String)
+
+
+-- | Kill @terminal64.exe@ and start it again, detached from this process.
+--
+--   The terminal is started through @systemd-run --user@ when available, so it
+--   lives in its own unit and survives a restart of the calling process;
+--   otherwise it is started in a new session. The RPyC server and the other
+--   wine processes are left untouched. The terminal directory defaults to
+--   @$WINEPREFIX/drive_c/Program Files/MetaTrader 5@ and can be set with
+--   @MT5_TERMINAL_DIR@.
+restartTerminal :: FilePath -> IO ()
+restartTerminal baseDir = do
+  winePrefix <- lookupEnv "WINEPREFIX" >>= maybe ((</> ".wine") <$> getHomeDirectory) return
+  termDir <- fromMaybe (winePrefix </> "drive_c/Program Files/MetaTrader 5") <$> lookupEnv "MT5_TERMINAL_DIR"
+  _ <- readProcessWithExitCode "pkill" ["-TERM", "-f", terminalPattern] ""
+  waitForExit (30 :: Int)
+  _ <- readProcessWithExitCode "pkill" ["-KILL", "-f", terminalPattern] ""
+  sweepStaleRequests
+  wine <- fromMaybe "wine" <$> findExecutable "wine"
+  systemdRun <- findExecutable "systemd-run"
+  now <- getCurrentTime
+  let exe = termDir </> "terminal64.exe"
+      unitName = "mt5-terminal-" ++ show (floor (utcTimeToPOSIXSeconds now) :: Integer)
+      cmd = case systemdRun of
+        Just sr -> proc sr [ "--user", "--collect", "--quiet", "--unit", unitName
+                           , "--setenv=WINEPREFIX=" ++ winePrefix
+                           , "--working-directory=" ++ termDir, wine, exe ]
+        Nothing -> (proc wine [exe]) { cwd = Just termDir, new_session = True }
+  (_, _, _, ph) <- createProcess cmd { std_in = NoStream, std_out = NoStream, std_err = NoStream }
+  -- systemd-run returns once the unit is started; the fallback keeps running.
+  _ <- forkIO (void (waitForProcess ph))
+  $(logError) $ "MT5 terminal restart issued (" ++ exe ++ ")"
+  where
+    terminalPattern = "terminal64\\.exe"
+    waitForExit :: Int -> IO ()
+    waitForExit n
+      | n <= 0 = return ()
+      | otherwise = do
+          (code, _, _) <- readProcessWithExitCode "pgrep" ["-f", terminalPattern] ""
+          case code of
+            ExitSuccess -> threadDelay 1000000 >> waitForExit (n - 1)
+            _           -> return ()
+    -- Requests left while the EA was frozen belong to callers that gave up long
+    -- ago; the restarted EA must not execute them.
+    sweepStaleRequests = do
+      names <- listDirectory baseDir `catch` \(_ :: IOException) -> return []
+      forM_ (filter (requestFilePrefix `isPrefixOf`) names) $ \name -> do
+        age <- fileAge (baseDir </> name)
+        when (maybe False (> 60) age) $ removeFileIfExists (baseDir </> name)
 
 
 -- | Remove a file, ignoring the case where it is already gone.
