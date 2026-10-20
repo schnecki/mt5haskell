@@ -25,7 +25,7 @@ input string RequestPrefix = "mt5_api_req_";         // Request file name prefix
 input string ResponsePrefix = "mt5_api_resp_";       // Response file name prefix
 input string HeartbeatFileName = "mt5_api_heartbeat.txt"; // Liveness file rewritten every timer pass
 input int MaxRequestsPerPass = 20;                  // Max requests handled per timer/tick pass
-input int CheckIntervalInSecs = 1;                   // Check interval in seconds (minimum 1)
+input int CheckIntervalMs = 100;                     // Check interval in milliseconds (minimum 10)
 input bool EnableLogging = true;                     // Enable detailed logging
 
 //--- Global variables
@@ -34,6 +34,7 @@ CPositionInfo positionInfo;
 COrderInfo orderInfo;
 CFileTxt responseFileHandle;
 datetime lastProcessedTime = 0;
+ulong lastHeartbeatMs = 0;                           // GetTickCount64 of the last heartbeat write
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                     |
@@ -48,17 +49,17 @@ int OnInit()
    trade.SetTypeFilling(ORDER_FILLING_FOK);
    trade.SetAsyncMode(false);
 
-   //--- Set up timer for periodic file checking
-   // EventSetTimer expects seconds (minimum 1 second)
-   int timerSeconds = MathMax(1, CheckIntervalInSecs);
-   if(!EventSetTimer(timerSeconds))
+   //--- Set up timer for periodic file checking.  A request waits for the next
+   //--- timer pass, so the interval is the latency every request pays.
+   int timerMs = MathMax(10, CheckIntervalMs);
+   if(!EventSetMillisecondTimer(timerMs))
    {
       Print("ERROR: Failed to set timer. File checking may not work properly.");
       return(INIT_FAILED);
    }
 
    Print("MT5 REST API Bridge started successfully");
-   Print("Checking for requests every ", timerSeconds, " second(s)");
+   Print("Checking for requests every ", timerMs, " ms");
    Print("Waiting for requests matching: ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", RequestPrefix, "*.json");
    Print("Responses will be written as: ", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\\Files\\", ResponsePrefix, "<id>.json");
 
@@ -81,7 +82,13 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   WriteHeartbeat();
+   //--- The heartbeat is written once a second, not on every pass.
+   ulong nowMs = GetTickCount64();
+   if(nowMs - lastHeartbeatMs >= 1000)
+   {
+      WriteHeartbeat();
+      lastHeartbeatMs = nowMs;
+   }
    //--- Process any pending file requests
    ProcessFileRequests();
 }
