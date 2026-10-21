@@ -3,11 +3,13 @@ module MT5.Communication.Socket
     ( socketPath
     , isSocketAvailable
     , connectSocketHandle
+    , daemonPeerPid
     ) where
 
-import           Control.Exception  (SomeException, try)
+import           Control.Exception  (SomeException, bracket, try)
 import           Network.Socket     (Family (..), SockAddr (..), SocketType (..),
-                                     connect, defaultProtocol, socket)
+                                     close, connect, defaultProtocol,
+                                     getPeerCredential, socket)
 import           Network.Socket     (socketToHandle)
 import           System.IO          (Handle, IOMode (..), hClose)
 
@@ -30,3 +32,15 @@ isSocketAvailable = do
     return $ case result of
         Left  _ -> False
         Right _ -> True
+
+-- | Process id of the daemon listening on 'socketPath', read from the peer
+-- credentials of a probe connection; 'Nothing' when no daemon accepts.
+daemonPeerPid :: IO (Maybe Int)
+daemonPeerPid = do
+    result <- try $ bracket (socket AF_UNIX Stream defaultProtocol) close $ \sock -> do
+        connect sock (SockAddrUnix socketPath)
+        (mPid, _, _) <- getPeerCredential sock
+        return (fromIntegral <$> mPid)
+    return $ case result :: Either SomeException (Maybe Int) of
+        Left  _ -> Nothing
+        Right r -> r

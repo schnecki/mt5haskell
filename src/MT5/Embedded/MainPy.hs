@@ -5,16 +5,41 @@
 -- to prevent missing file issues during deployment.
 module MT5.Embedded.MainPy
     ( mainPyContent
+    , daemonVersion
     , writeMainPy
     ) where
+
+import           Data.Bits        (xor)
+import           Data.Char        (ord)
+import           Data.List        (foldl', isPrefixOf)
+import           Data.Word        (Word64)
+import           Numeric          (showHex)
 
 import           System.Directory (createDirectoryIfMissing)
 import           System.FilePath  ((</>), takeDirectory)
 
 
--- | Complete main.py file content embedded as string
+-- | Complete main.py file content, with 'daemonVersion' filled in.
 mainPyContent :: String
-mainPyContent = unlines
+mainPyContent = substitute mainPyTemplate
+  where
+    placeholder = "@@DAEMON_VERSION@@"
+    substitute [] = []
+    substitute str@(c:cs)
+      | placeholder `isPrefixOf` str = daemonVersion ++ substitute (drop (length placeholder) str)
+      | otherwise                    = c : substitute cs
+
+-- | Version of the embedded daemon: the 64-bit FNV-1a hash of its source, in hex.
+-- A running daemon whose version differs runs other code than this build.
+daemonVersion :: String
+daemonVersion = showHex (foldl' step 0xcbf29ce484222325 mainPyTemplate) ""
+  where
+    step :: Word64 -> Char -> Word64
+    step h c = (h `xor` fromIntegral (ord c)) * 0x100000001b3
+
+-- | Daemon source with a placeholder for 'daemonVersion'.
+mainPyTemplate :: String
+mainPyTemplate = unlines
   [ ""
   , "import json"
   , "import signal"
@@ -37,6 +62,8 @@ mainPyContent = unlines
   , ""
   , "DEBUG=False"
   , "SOCKET_PATH = '/tmp/mt5haskell.sock'"
+  , "# Hash of this daemon's source; clients compare it in the HELLO handshake."
+  , "DAEMON_VERSION = '@@DAEMON_VERSION@@'"
   , "# Optional PID of the RPyC server started by the owning Haskell process."
   , "# When the last client disconnects we send SIGTERM to clean it up."
   , "RPYC_PID = int(sys.argv[1]) if len(sys.argv) > 1 else None"
@@ -733,7 +760,11 @@ mainPyContent = unlines
   , "                    # any real MT5 command arrives, closing the window where"
   , "                    # an owner QUIT could see count==0 while a client is"
   , "                    # connected-but-not-yet-counted."
-  , "                    send('WELCOME')"
+  , "                    # The reply carries the daemon version and the number of"
+  , "                    # registered clients, including this one."
+  , "                    with _client_lock:"
+  , "                        _n = _client_count"
+  , "                    send('WELCOME ' + DAEMON_VERSION + ' ' + str(_n))"
   , "                    # No break — continue the command loop."
   , "                elif line == 'QUIT':"
   , "                    # Disconnect this client only; daemon keeps running."

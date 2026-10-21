@@ -20,23 +20,26 @@ module MT5.Init
 import           Control.Concurrent       (threadDelay)
 import           Control.Exception        (SomeException, catch, onException,
                                            throwIO, try)
-import           Control.Monad            (filterM, liftM2, unless, void, when,
+import           Control.Monad            (filterM, forM_, liftM2, unless, void, when,
                                            (<=<))
 import qualified Data.ByteString          as B
+import qualified Data.ByteString.Char8    as B8
 import           Data.IORef
 import           Data.List                (isPrefixOf, sortOn)
 import           Data.Maybe               (fromMaybe, isNothing)
 import           Data.Ord                 (Down (..))
+import           Data.Char                (isDigit)
 import qualified Data.Text                as T
 import qualified Data.Text.Encoding       as Encoding
 import           EasyLogger
 import           GHC.IO         hiding (onException)
 import           GHC.IO.Handle
-import           System.Directory         (doesDirectoryExist, doesFileExist,
-                                           getDirectoryContents, makeAbsolute,
+import           System.Directory         (XdgDirectory (..), createDirectoryIfMissing,
+                                           doesDirectoryExist, doesFileExist, getXdgDirectory,
+                                           canonicalizePath, getDirectoryContents, makeAbsolute,
                                            removeDirectoryRecursive, removeFile)
 import           System.Exit
-import           System.FilePath          ((</>))
+import           System.FilePath          (takeDirectory, (</>))
 import           System.IO
 import           System.Posix.Files       (ownerReadMode, ownerWriteMode,
                                            unionFileModes)
@@ -44,6 +47,7 @@ import           System.Posix.IO          (OpenFileFlags (..), OpenMode (..),
                                            closeFd, defaultFileFlags, fdWrite,
                                            openFd)
 import           System.Posix.Process     (getProcessID)
+import           System.Posix.Signals     (sigTERM, signalProcess)
 import           System.Process           hiding (env)
 import           System.Timeout           (timeout)
 import           Text.Regex
@@ -53,6 +57,7 @@ import           MT5.Communication
 import           MT5.Communication.PyProc
 import           MT5.Communication.Socket
 import           MT5.Config
+import           MT5.Embedded.MainPy      (daemonVersion)
 
 
 venvPython :: Config -> IO FilePath
@@ -117,10 +122,14 @@ tryAcquireDaemonLock = do
         removeFile daemonLockPath `catch` \(_ :: IOError) -> return ()
         tryAcquireDaemonLock
 
--- | Release daemon ownership by removing the lock file.
+-- | Release daemon ownership by removing the lock file, provided this process
+-- holds it; a lock taken over by a replacement owner stays in place.
 releaseDaemonLock :: IO ()
-releaseDaemonLock =
-    removeFile daemonLockPath `catch` \(_ :: IOError) -> return ()
+releaseDaemonLock = do
+    pid <- show <$> getProcessID
+    content <- readFile daemonLockPath `catch` \(_ :: IOError) -> return ""
+    when (stripWS content == pid) $
+        removeFile daemonLockPath `catch` \(_ :: IOError) -> return ()
 
 -- | Strip leading and trailing whitespace.
 stripWS :: String -> String
@@ -162,6 +171,43 @@ startSocketDaemon config mRpycPid = do
             }
     writeIORef mt5DaemonProcess (Just pHandle)
 
+-- | Close this process's daemon connection without sending QUIT.
+stopMT5Connection :: IO ()
+stopMT5Connection = do
+    mPp <- readIORef pyProc
+    forM_ mPp $ \pp -> void (try @SomeException (pyCleanup pp))
+    writeIORef pyProc Nothing
+
+-- | Stop the running daemon so that a fresh one with this build's code can
+-- start: SIGTERM the daemon (found through the socket's peer credentials) and
+-- its RPyC wrapper (the daemon's last command-line argument), wait up to 15 s
+-- for the socket to close, and drop the ownership lock of the old owner.
+replaceDaemon :: IO ()
+replaceDaemon = do
+    mPid <- daemonPeerPid
+    forM_ mPid $ \pid -> do
+        args <- (splitNul <$> readFile ("/proc/" ++ show pid ++ "/cmdline"))
+                    `catch` \(_ :: IOError) -> return []
+        let mRpyc = case reverse args of
+                (a:_) | not (null a), all isDigit a -> Just (read a :: Int)
+                _                                   -> Nothing
+        $(logInfo) $ "Stopping MT5 daemon pid " ++ show pid ++ maybe "" ((", RPyC pid " ++) . show) mRpyc
+        forM_ (pid : maybe [] pure mRpyc) $ \p ->
+            void $ try @SomeException (signalProcess sigTERM (fromIntegral p))
+    gone <- waitForSocketGone 15
+    unless gone $ error "MT5: the outdated daemon did not stop within 15 s"
+    removeFile daemonLockPath `catch` \(_ :: IOError) -> return ()
+  where
+    splitNul str = case break (== '\0') str of
+        (a, [])     -> [a | not (null a)]
+        (a, _:rest) -> a : splitNul rest
+    waitForSocketGone :: Int -> IO Bool
+    waitForSocketGone n = do
+        avail <- isSocketAvailable
+        if not avail then return True
+        else if n <= 0 then return False
+        else threadDelay (1 * 10^(6 :: Int)) >> waitForSocketGone (n - 1)
+
 -- | Block until the daemon socket is connectable, up to @n@ seconds.
 --
 -- Throws an error when the timeout expires (used on the owner path where
@@ -190,7 +236,11 @@ waitForSocketTimeout n = do
 -- and the first real MT5 command where the owner sending QUIT could see
 -- count == 0 and call _shutdown_daemon, disconnecting all clients.
 connectToDaemon :: IO ()
-connectToDaemon = do
+connectToDaemon = void helloDaemon
+
+-- | 'connectToDaemon' returning the daemon's HELLO reply.
+helloDaemon :: IO B.ByteString
+helloDaemon = do
     h <- connectSocketHandle
     writeIORef pyProc $ Just $ PyProc h h (hClose h)
     -- Bound the HELLO handshake with the same per-cycle deadline used for
@@ -200,9 +250,9 @@ connectToDaemon = do
     -- 'pyProcLock', re-freezing every subsequent MT5 call across all
     -- instruments.  On timeout, drop the fresh socket and surface a recoverable
     -- 'MT5TimeoutException' so upstream retry/backoff proceeds instead of hanging.
-    handshake <- timeout mt5CycleTimeoutMicros (send "HELLO" >> void receive)
+    handshake <- timeout mt5CycleTimeoutMicros (send "HELLO" >> receive)
     case handshake of
-        Just _  -> registerReconnectAction connectToDaemon
+        Just reply -> registerReconnectAction connectToDaemon >> return reply
         Nothing -> do
             hClose h `catch` \(_ :: SomeException) -> return ()
             -- Drop the dead handle from 'pyProc'; leaving it set would let the
@@ -366,27 +416,34 @@ resolveMT5LinuxPath config = case mt5linuxLocalPath config of
         if exists
             then makeAbsolute userPath
             else error $ "Specified mt5linux path does not exist: " ++ userPath
-    Nothing -> return "/tmp/mt5linux"
+    Nothing -> mt5haskellCacheDir "mt5linux"
 
+-- | Directory @name@ below the user's cache directory for mt5haskell
+-- (@~/.cache/mt5haskell@).  Kept out of @/tmp@, whose age-based cleanup
+-- deletes files of a long-lived checkout.
+mt5haskellCacheDir :: FilePath -> IO FilePath
+mt5haskellCacheDir name = (</> name) <$> getXdgDirectory XdgCache "mt5haskell"
+
+-- | Make sure a complete mt5linux checkout exists and return its path.  A
+-- checkout with missing files is removed and cloned again.
 setupMT5LinuxRepository :: Config -> IO FilePath
 setupMT5LinuxRepository config = do
     repoPath <- resolveMT5LinuxPath config
     exists <- doesDirectoryExist repoPath
-    if exists
-        then do
-            $(logInfo) $ "Using existing mt5linux repository at: " ++ repoPath
-            validateRepository repoPath
-            return repoPath
+    missing <- if exists then missingFiles repoPath else return []
+    when (exists && not (null missing)) $ do
+        $(logWarning) $ "Incomplete mt5linux repository at " ++ repoPath ++ ", missing " ++ show missing ++ "; cloning it again"
+        removeDirectoryRecursive repoPath
+    if exists && null missing
+        then $(logInfo) $ "Using existing mt5linux repository at: " ++ repoPath
         else do
             $(logInfo) $ "Cloning mt5linux repository to: " ++ repoPath
+            createDirectoryIfMissing True (takeDirectory repoPath)
             callProcess "git" ["clone", mt5linuxGitRepo config, repoPath]
-            return repoPath
+    return repoPath
   where
-    validateRepository path = do
-        let requiredFiles = ["setup.py", "mt5linux/__init__.py"]
-        missing <- filterM (fmap not . doesFileExist . (path </>)) requiredFiles
-        unless (null missing) $
-            error $ "Invalid mt5linux repository, missing files: " ++ show missing
+    missingFiles path =
+        filterM (fmap not . doesFileExist . (path </>)) ["setup.py", "mt5linux/__init__.py"]
 
 
 -- =====================================================================
@@ -453,10 +510,30 @@ startMT5 config = do
     connectAsClient :: Config -> IO Config
     connectAsClient cfg = do
         $(logInfoText) "MT5 daemon already running — connecting as client"
-        connectToDaemon
-        writeIORef mt5DaemonOwner False
-        writeIORef mt5Started True
-        return cfg
+        reply <- helloDaemon
+        case words (B8.unpack reply) of
+            ["WELCOME", v, _] | v == daemonVersion -> registered
+            ["WELCOME", v, n] | n /= "1" -> do
+                $(logWarning) $ "MT5 daemon runs version " ++ v ++ ", this build " ++ daemonVersion ++
+                    "; keeping it for its " ++ n ++ " clients"
+                registered
+            ["WELCOME", v, _] -> do
+                $(logWarning) $ "MT5 daemon runs version " ++ v ++ ", this build " ++ daemonVersion ++
+                    "; replacing the daemon"
+                stopMT5Connection
+                replaceDaemon
+                acquireAndStart cfg
+            _ -> do
+                -- A daemon without a version reports no client count either,
+                -- so it may serve other processes and is kept.
+                $(logWarning) $ "MT5 daemon reports no version (reply " ++ show reply ++
+                    "); keeping it.  Stop it once by hand to load this build's daemon"
+                registered
+      where
+        registered = do
+            writeIORef mt5DaemonOwner False
+            writeIORef mt5Started True
+            return cfg
 
     acquireAndStart :: Config -> IO Config
     acquireAndStart cfg = do
@@ -494,6 +571,7 @@ startMT5 config = do
 
         config''' <- setupPythonEnvironment config'' newInstall
         when newInstall createVenv
+        unless newInstall $ linkVenvToRepository pythonBin repoPath
 
         rpycHandle <- startMT5Server config'''
         writeIORef mt5RpycProcess (Just rpycHandle)
@@ -511,6 +589,18 @@ startMT5 config = do
         writeIORef mt5Started True
         return config'''
       where
+        -- An existing venv may hold mt5linux as an editable install of another
+        -- checkout; reinstall it from @repo@ when the import resolves elsewhere.
+        linkVenvToRepository :: FilePath -> FilePath -> IO ()
+        linkVenvToRepository python repo = do
+            (code, out, _) <- readProcessWithExitCode python
+                ["-c", "import mt5linux, os; print(os.path.dirname(os.path.dirname(os.path.realpath(mt5linux.__file__))))"] ""
+            repoReal <- canonicalizePath repo
+            when (code /= ExitSuccess || stripWS out /= repoReal) $ do
+                $(logInfo) $ "Installing mt5linux from " ++ repo ++ " into the venv"
+                res <- spawnCommand (venvDir config ++ "/bin/pip install -q -e " ++ repo) >>= waitForProcess
+                when (res /= ExitSuccess) $ error $ "ERROR: pip install -e " ++ repo ++ " failed: " ++ show res
+
         setupPythonEnvironment :: Config -> Bool -> IO Config
         setupPythonEnvironment c newInstall =
             case pythonEnv c of
@@ -534,7 +624,8 @@ startMT5 config = do
                 winPip    <- locateExecutable "pip.exe"
                 when newInstall $ do
                     pipInstall winPython winPip "MetaTrader5"
-                    pipInstall winPython winPip "-e /tmp/mt5linux/"
+                    repoPath <- resolveMT5LinuxPath c
+                    pipInstall winPython winPip ("-e " ++ repoPath)
                 return $ c { winePython = winPython, winePip = winPip }
 
             handleError :: SomeException -> IO Config
@@ -560,9 +651,10 @@ startMT5 config = do
         startMT5Server c = do
             when (winePython c == "") $ error "Need to call installMT5InWine before startMT5Server"
             python <- venvPython c
+            serverDir <- mt5haskellCacheDir "server"
             devNull <- openFile "/dev/null" ReadWriteMode
             (_, _, _, pHandle) <-
-                createProcess (proc python ["-m", "mt5linux", winePython c])
+                createProcess (proc python ["-m", "mt5linux", "-s", serverDir, winePython c])
                     { cwd    = Just "."
                     , std_in  = UseHandle devNull
                     , std_out = UseHandle devNull
