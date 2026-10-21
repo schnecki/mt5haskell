@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass      #-}
 {-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -41,6 +42,8 @@ module MT5.API
   , copyTicksRange
   , historyDealsRealizedForPosition
   , historyDealsForPosition
+, historyDealDetailsForPosition
+, PositionDeal (..)
     -- * ExceptT Helper Functions
   , liftMaybe
   , eitherToExceptT
@@ -2319,6 +2322,63 @@ historyDealsForPosition positionId = withMT5Lock $ do
       -- only partially consumed; leftover framed objects stay buffered on the
       -- socket and would desync every subsequent request/response cycle. Drop
       -- and re-open the socket so the next cycle starts byte-aligned.
+      reconnectDaemon
+      return $ Left (show e)
+    Right res                 -> return res
+
+-- | One deal of a position from the broker's deal history.
+data PositionDeal = PositionDeal
+  { pdTime   :: !UTCTime  -- ^ Execution time, UTC.
+  , pdBuy    :: !Bool     -- ^ A buy deal ('False': a sell deal).
+  , pdEntry  :: !Int      -- ^ MT5 deal entry: 0 in, 1 out, 2 in-out, 3 out-by.
+  , pdVolume :: !Double   -- ^ Volume in lots.
+  , pdPrice  :: !Double   -- ^ Execution price.
+  , pdNet    :: !Double   -- ^ @profit + swap + commission + fee@ in account currency.
+  } deriving (Eq, Show, Generic, NFData)
+
+-- | The deals of a position with time, side, entry, volume, price and net
+-- result.
+--
+-- Wraps MT5's @history_deals_get(position=ticket)@.  Returns @Left@ with a
+-- message when the bridge reports an error, and an empty list when the position
+-- has no deals.
+historyDealDetailsForPosition :: Integer  -- ^ MT5 position ticket
+                              -> IO (Either String [PositionDeal])
+historyDealDetailsForPosition positionId = withMT5Lock $ do
+  outcome <- try $ do
+    send "HISTORY_DEAL_DETAILS_GET_POSITION"
+    send (show positionId)
+    status <- unpickle' "String" <$> receive
+    if | "error:" `isPrefixOf` status -> return $ Left (drop 6 status)
+       -- A daemon started from an older build answers the command and the
+       -- ticket line each with this reply; the second one would stay on the
+       -- socket, so the connection is re-opened.
+       | "Unknown command" `isPrefixOf` status -> do
+           reconnectDaemon
+           return $ Left "daemon does not support HISTORY_DEAL_DETAILS_GET_POSITION; restart the MT5 daemon"
+       | otherwise -> do
+        n <- unpickle' "Int" <$> receive
+        fmap Right $ replicateM n $ do
+          timeMsc    <- (unpickle' "Integer" <$> receive) :: IO Integer
+          typ        <- unpickle' "Int"    <$> receive
+          entry      <- unpickle' "Int"    <$> receive
+          volume     <- unpickle' "Double" <$> receive
+          price      <- unpickle' "Double" <$> receive
+          profit     <- unpickle' "Double" <$> receive
+          swap       <- unpickle' "Double" <$> receive
+          commission <- unpickle' "Double" <$> receive
+          fee        <- unpickle' "Double" <$> receive
+          return PositionDeal
+            { pdTime   = serverMscToUTCTime timeMsc
+            , pdBuy    = (typ :: Int) == 0
+            , pdEntry  = entry
+            , pdVolume = volume
+            , pdPrice  = price
+            , pdNet    = profit + swap + commission + fee
+            }
+  case outcome of
+    Left (e :: SomeException) -> do
+      -- A partially consumed reply would desync later cycles; re-open the socket.
       reconnectDaemon
       return $ Left (show e)
     Right res                 -> return res
