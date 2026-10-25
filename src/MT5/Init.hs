@@ -6,6 +6,7 @@ module MT5.Init
     ( startMT5
     , stopMT5
     , mt5Started
+    , resetMT5Connection
     , isSocketAvailable
     , detectExecutionEnvironment
     , detectPythonEnvironments
@@ -58,6 +59,8 @@ import           MT5.Communication.PyProc
 import           MT5.Communication.Socket
 import           MT5.Config
 import           MT5.Embedded.MainPy      (daemonVersion)
+import           MT5.Util                 (setServerTZ)
+import           Data.Time.Zones.All       (tzByLabel)
 
 
 venvPython :: Config -> IO FilePath
@@ -177,6 +180,15 @@ stopMT5Connection = do
     mPp <- readIORef pyProc
     forM_ mPp $ \pp -> void (try @SomeException (pyCleanup pp))
     writeIORef pyProc Nothing
+
+-- | Drop this process's daemon connection and mark MT5 as not started, so the
+-- next 'startMT5' performs the full connect and handshake again. Use when the
+-- handshake after 'startMT5' (e.g. 'MT5.API.initialize') fails: the daemon and
+-- the RPyC server are left running for other clients.
+resetMT5Connection :: IO ()
+resetMT5Connection = do
+    stopMT5Connection
+    writeIORef mt5Started False
 
 -- | Stop the running daemon so that a fresh one with this build's code can
 -- start: SIGTERM the daemon (found through the socket's peer credentials) and
@@ -502,6 +514,11 @@ startMT5 config = do
     -- 'MT5.Util') observe the configured broker trade-server zone, communication
     -- channels and login rather than the 'def' placeholder.
     setConfig config
+    -- Install the broker trade-server zone from the configuration up front.
+    -- The zone is static configuration, so it must not depend on the daemon
+    -- handshake: a failed 'MT5.API.initialize' after 'mt5Started' is set would
+    -- otherwise leave every later candle conversion without a zone.
+    forM_ (serverTimeZone config) (setServerTZ . tzByLabel)
     avail <- isSocketAvailable
     if avail
         then connectAsClient config

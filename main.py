@@ -600,9 +600,8 @@ def _handle_client(conn):
     except EOFError:
         pass
     except Exception as e:
-        if DEBUG:
-            sys.stderr.write('Client error: ' + str(e) + '\n')
-            sys.stderr.flush()
+        sys.stderr.write('Client error: ' + type(e).__name__ + ': ' + str(e) + '\n')
+        sys.stderr.flush()
     finally:
         try: _tlocal.fin.close()
         except Exception: pass

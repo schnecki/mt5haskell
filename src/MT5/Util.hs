@@ -65,7 +65,7 @@ millisecondsToUTCTime millis =
 serverTZRef :: IORef (Maybe TZ)
 serverTZRef = unsafePerformIO (newIORef Nothing)
 
--- | Install the broker trade-server zone (call once, at 'MT5.API.initialize').
+-- | Install the broker trade-server zone (done by 'MT5.Init.startMT5' and 'MT5.API.initialize').
 setServerTZ :: TZ -> IO ()
 setServerTZ = writeIORef serverTZRef . Just
 
