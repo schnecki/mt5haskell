@@ -44,6 +44,8 @@ module MT5.API
   , historyDealsForPosition
 , historyDealDetailsForPosition
 , PositionDeal (..)
+  , historyDealsRange
+  , BrokerDeal (..)
     -- * ExceptT Helper Functions
   , liftMaybe
   , eitherToExceptT
@@ -2375,6 +2377,78 @@ historyDealDetailsForPosition positionId = withMT5Lock $ do
             , pdVolume = volume
             , pdPrice  = price
             , pdNet    = profit + swap + commission + fee
+            }
+  case outcome of
+    Left (e :: SomeException) -> do
+      -- A partially consumed reply would desync later cycles; re-open the socket.
+      reconnectDaemon
+      return $ Left (show e)
+    Right res                 -> return res
+
+-- | One deal of the account's deal history, with the fields needed to rebuild
+-- round trips per position and to tell trader-opened from manual positions.
+data BrokerDeal = BrokerDeal
+  { bdTicket     :: !Integer  -- ^ Deal ticket.
+  , bdOrder      :: !Integer  -- ^ Order ticket that produced the deal.
+  , bdPosition   :: !Integer  -- ^ Position id the deal belongs to (0 for balance deals).
+  , bdTime       :: !UTCTime  -- ^ Execution time, UTC.
+  , bdSymbol     :: !String   -- ^ Broker symbol (empty for balance deals).
+  , bdType       :: !Int      -- ^ MT5 deal type: 0 buy, 1 sell, 2 balance, ...
+  , bdEntry      :: !Int      -- ^ MT5 deal entry: 0 in, 1 out, 2 in-out, 3 out-by.
+  , bdVolume     :: !Double   -- ^ Volume in lots.
+  , bdPrice      :: !Double   -- ^ Execution price.
+  , bdProfit     :: !Double   -- ^ Profit in account currency.
+  , bdSwap       :: !Double   -- ^ Swap in account currency.
+  , bdCommission :: !Double   -- ^ Commission in account currency.
+  , bdFee        :: !Double   -- ^ Fee in account currency.
+  , bdMagic      :: !Integer  -- ^ Expert magic number.
+  , bdComment    :: !String   -- ^ Deal comment.
+  } deriving (Eq, Show, Generic, NFData)
+
+-- | All deals executed in the UTC window @[fromTime, toTime]@.
+--
+-- Wraps MT5's @history_deals_get(date_from, date_to)@; the window is shifted to
+-- broker server time with 'utcToServerTime'.  Returns @Left@ with a message when
+-- the bridge reports an error or the daemon predates the command.
+historyDealsRange :: UTCTime  -- ^ Window start, UTC.
+                  -> UTCTime  -- ^ Window end, UTC.
+                  -> IO (Either String [BrokerDeal])
+historyDealsRange fromTime toTime = withMT5Lock $ do
+  let epoch :: UTCTime -> Integer
+      epoch = floor . utcTimeToPOSIXSeconds . utcToServerTime
+  outcome <- try $ do
+    send "HISTORY_DEALS_GET_RANGE"
+    send (show (epoch fromTime))
+    send (show (epoch toTime))
+    status <- unpickle' "String" <$> receive
+    if | "error:" `isPrefixOf` status -> return $ Left (drop 6 status)
+       | "Unknown command" `isPrefixOf` status -> do
+           reconnectDaemon
+           return $ Left "daemon does not support HISTORY_DEALS_GET_RANGE; restart the MT5 daemon"
+       | otherwise -> do
+        n <- unpickle' "Int" <$> receive
+        fmap Right $ replicateM n $ do
+          ticket     <- unpickle' "Integer" <$> receive
+          order      <- unpickle' "Integer" <$> receive
+          position   <- unpickle' "Integer" <$> receive
+          timeMsc    <- unpickle' "Integer" <$> receive
+          symbol     <- unpickle' "String"  <$> receive
+          typ        <- unpickle' "Int"     <$> receive
+          entry      <- unpickle' "Int"     <$> receive
+          volume     <- unpickle' "Double"  <$> receive
+          price      <- unpickle' "Double"  <$> receive
+          profit     <- unpickle' "Double"  <$> receive
+          swap       <- unpickle' "Double"  <$> receive
+          commission <- unpickle' "Double"  <$> receive
+          fee        <- unpickle' "Double"  <$> receive
+          magic      <- unpickle' "Integer" <$> receive
+          comment    <- unpickle' "String"  <$> receive
+          return BrokerDeal
+            { bdTicket = ticket, bdOrder = order, bdPosition = position
+            , bdTime = serverMscToUTCTime timeMsc, bdSymbol = symbol, bdType = typ
+            , bdEntry = entry, bdVolume = volume, bdPrice = price, bdProfit = profit
+            , bdSwap = swap, bdCommission = commission, bdFee = fee
+            , bdMagic = magic, bdComment = comment
             }
   case outcome of
     Left (e :: SomeException) -> do
